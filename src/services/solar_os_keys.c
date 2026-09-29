@@ -33,6 +33,7 @@ static const key_name_t key_names[] = {
     {"HOME", SOLAR_OS_KEY_HOME},
     {"END", SOLAR_OS_KEY_END},
     {"DELETE", SOLAR_OS_KEY_DELETE},
+    {"BACKTAB", SOLAR_OS_KEY_BACKTAB},
     {"SHIFT_UP", SOLAR_OS_KEY_SHIFT_UP},
     {"SHIFT_DOWN", SOLAR_OS_KEY_SHIFT_DOWN},
     {"SHIFT_LEFT", SOLAR_OS_KEY_SHIFT_LEFT},

@@ -89,6 +89,38 @@ static const solar_os_map_point_t *map_app_selected(void)
     return NULL;
 }
 
+/*
+ * Colour where the display has it, and the same black outline everywhere
+ * else. A board with a monochrome surface draws exactly what it drew before
+ * classes existed rather than a worse version of it.
+ */
+static bool map_app_colour(const solar_os_gfx_t *gfx)
+{
+    return solar_os_gfx_format(gfx) == SOLAR_OS_DISPLAY_FORMAT_INDEX8;
+}
+
+static solar_os_gfx_color_t map_app_class_color(const solar_os_gfx_t *gfx,
+                                                solar_os_map_class_t klass)
+{
+    if (!map_app_colour(gfx)) {
+        return SOLAR_OS_GFX_COLOR_BLACK;
+    }
+    switch (klass) {
+    case SOLAR_OS_MAP_CLASS_WATER:
+        return solar_os_gfx_rgb(60, 110, 190);
+    case SOLAR_OS_MAP_CLASS_ROAD:
+        return solar_os_gfx_rgb(170, 90, 40);
+    case SOLAR_OS_MAP_CLASS_RAIL:
+        return solar_os_gfx_rgb(120, 120, 120);
+    case SOLAR_OS_MAP_CLASS_BUILDING:
+        return solar_os_gfx_rgb(150, 130, 110);
+    case SOLAR_OS_MAP_CLASS_BOUNDARY:
+        return solar_os_gfx_rgb(160, 80, 160);
+    default:
+        return solar_os_gfx_rgb(40, 110, 60);
+    }
+}
+
 static int map_app_area_height(const solar_os_gfx_t *gfx)
 {
     const int height = (int)solar_os_gfx_height(gfx) - MAP_APP_HEADER_H -
@@ -299,7 +331,7 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
          * the map, so it is left out.
          */
         const size_t segments = ring.open ? kept - 1U : kept;
-        solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+        solar_os_gfx_set_color(gfx, map_app_class_color(gfx, ring.klass));
         for (size_t point = 0U; point < segments; point++) {
             const map_app_vertex_t *a = &map_app.scratch[point];
             const map_app_vertex_t *b = &map_app.scratch[(point + 1U) % kept];
@@ -722,6 +754,7 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
     case 'n':
         map_app_select_next(true);
         break;
+    case SOLAR_OS_KEY_BACKTAB:
     case 'p':
         map_app_select_next(false);
         break;

@@ -51,6 +51,9 @@
 #define SOLAR_OS_KEY_CTRL_MINUS 0x1fu
 #define SOLAR_OS_KEY_CTRL 0xacu
 #define SOLAR_OS_KEY_AUDIO_MUTE_TOGGLE 0xadu
+/* Tab backwards. Tab itself is a character, but its reverse has no
+ * character, so it needs a key of its own. */
+#define SOLAR_OS_KEY_BACKTAB 0xaeu
 #define SOLAR_OS_KEY_ESCAPE 0x1bu
 
 bool solar_os_key_parse(const char *text, uint8_t *key);

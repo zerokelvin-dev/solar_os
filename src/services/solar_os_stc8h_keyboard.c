@@ -283,8 +283,13 @@ static void process_pending_key(solar_os_stc8h_device_t *device,
             device->compose_armed = false;
         } else if (key == SOLAR_OS_KEY_UP || key == SOLAR_OS_KEY_DOWN ||
                    key == SOLAR_OS_KEY_LEFT || key == SOLAR_OS_KEY_RIGHT) {
-            /* Composed arrows scroll and navigate, and keep the layer
-             * armed so repeated presses page through the scrollback. */
+            /*
+             * Composed up and down scroll, and composed left and right move
+             * between panes. The keypad cannot send tab at all, so this is
+             * the only way to reach it, and reaching it one key from the
+             * Message key is worth more than reaching the ends of a line.
+             * The layer stays armed so a run of presses keeps working.
+             */
             switch (key) {
             case SOLAR_OS_KEY_UP:
                 key = SOLAR_OS_KEY_PAGE_UP;
@@ -293,10 +298,10 @@ static void process_pending_key(solar_os_stc8h_device_t *device,
                 key = SOLAR_OS_KEY_PAGE_DOWN;
                 break;
             case SOLAR_OS_KEY_LEFT:
-                key = SOLAR_OS_KEY_HOME;
+                key = SOLAR_OS_KEY_BACKTAB;
                 break;
             default:
-                key = SOLAR_OS_KEY_END;
+                key = (uint8_t)'\t';
                 break;
             }
             device->compose_deadline_us =
