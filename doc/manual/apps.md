@@ -383,7 +383,7 @@ independently.
 Usage:
 
 ```text
-chat [gateway|meshcore|link|conversation-id]
+chat [gateway|meshcore|link|reticulum|conversation-id]
 ```
 
 With no selector, Chat opens a unified view and initially selects the newest

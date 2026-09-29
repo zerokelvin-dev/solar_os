@@ -370,7 +370,7 @@ members = ["job_meshcore"]
 [groups.reticulum]
 label = "Reticulum"
 category = "Network"
-members = ["job_reticulum"]
+members = ["job_reticulum", "service_lxmf"]
 
 [groups.audio_commands]
 label = "Audio playback and recording commands"
@@ -850,6 +850,14 @@ sources = ["shell/solar_os_shell_hardware.c"]
 label = "service.inbox"
 sources = ["services/solar_os_inbox.c"]
 requires = ["esp_timer", "heap", "nvs_flash"]
+
+[packages.service_lxmf]
+label = "service.lxmf"
+depends = ["service_contacts", "service_messaging", "service_reticulum"]
+sources = [
+  "services/solar_os_lxmf.cpp",
+  "services/solar_os_lxmf_format.c",
+]
 
 [packages.service_map]
 label = "service.map"

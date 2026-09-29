@@ -5,11 +5,17 @@
 
 #include "solar_os_credentials.h"
 #include "solar_os_reticulum.h"
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+#include "solar_os_lxmf.h"
+#endif
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
 
 static const char * const reticulum_commands[] = {
     "status", "identity", "announce", "announces",
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    "lxmf",
+#endif
 };
 
 static void reticulum_usage(solar_os_shell_io_t *io)
@@ -23,6 +29,11 @@ static void reticulum_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "  reticulum identity export --private");
     solar_os_shell_io_writeln(io, "  reticulum announce");
     solar_os_shell_io_writeln(io, "  reticulum announces");
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    solar_os_shell_io_writeln(io, "  reticulum lxmf status");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf announce");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf open <destination-hex>");
+#endif
     solar_os_shell_io_writeln(io, "start: job start reticulum <host> [port]");
 }
 
@@ -137,6 +148,75 @@ static void reticulum_announces(solar_os_shell_io_t *io)
     }
 }
 
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+static bool reticulum_lxmf(solar_os_shell_io_t *io, int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[2], "status") == 0) {
+        solar_os_lxmf_status_t status;
+        if (solar_os_lxmf_get_status(&status) != ESP_OK) {
+            reticulum_error(io, "lxmf status", ESP_FAIL);
+            return true;
+        }
+        solar_os_shell_io_printf(io,
+                                 "Delivery: %s\n",
+                                 status.attached ? status.destination_hex :
+                                     "offline");
+        solar_os_shell_io_printf(io, "Name: %s\n", status.display_name);
+        solar_os_shell_io_printf(io,
+                                 "Peers: %lu\n",
+                                 (unsigned long)status.peers);
+        solar_os_shell_io_printf(io,
+                                 "Received: %lu (%lu rejected)\n",
+                                 (unsigned long)status.received,
+                                 (unsigned long)status.rejected);
+        solar_os_shell_io_printf(io,
+                                 "Sent: %lu (%lu delivered, %lu failed)\n",
+                                 (unsigned long)status.sent,
+                                 (unsigned long)status.delivered,
+                                 (unsigned long)status.failed);
+        solar_os_shell_io_printf(io,
+                                 "Announces sent: %lu\n",
+                                 (unsigned long)status.announces_sent);
+        return true;
+    }
+    if (argc == 3 && strcmp(argv[2], "announce") == 0) {
+        const esp_err_t error = solar_os_lxmf_announce();
+        if (error == ESP_ERR_INVALID_STATE) {
+            solar_os_shell_io_writeln(
+                io, "reticulum lxmf: start it with: job start reticulum <host> [port]");
+        } else if (error != ESP_OK) {
+            reticulum_error(io, "lxmf announce", error);
+        } else {
+            solar_os_shell_io_writeln(io, "LXMF announce queued");
+        }
+        return true;
+    }
+    if (argc == 4 && strcmp(argv[2], "open") == 0) {
+        solar_os_conversation_id_t conversation = 0;
+        const esp_err_t error = solar_os_lxmf_open(argv[3], &conversation);
+        if (error == ESP_ERR_INVALID_ARG) {
+            solar_os_shell_diag_invalid(io,
+                                        "reticulum lxmf open",
+                                        "destination",
+                                        argv[3],
+                                        "32 hexadecimal characters",
+                                        "reticulum lxmf open <destination-hex>",
+                                        false);
+        } else if (error != ESP_OK) {
+            reticulum_error(io, "lxmf open", error);
+        } else {
+            solar_os_shell_io_printf(io,
+                                     "conversation %lu; send with: "
+                                     "messages send %lu <text>\n",
+                                     (unsigned long)conversation,
+                                     (unsigned long)conversation);
+        }
+        return true;
+    }
+    return false;
+}
+#endif
+
 void solar_os_shell_cmd_reticulum(solar_os_context_t *ctx,
                                   int argc,
                                   char **argv)
@@ -170,12 +250,22 @@ void solar_os_shell_cmd_reticulum(solar_os_context_t *ctx,
         reticulum_announces(io);
         return;
     }
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    if (argc >= 3 && strcmp(argv[1], "lxmf") == 0 &&
+        reticulum_lxmf(io, argc, argv)) {
+        return;
+    }
+#endif
     solar_os_shell_diag_subcommand(
         io,
         "reticulum",
         argc,
         argv,
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+        "reticulum status|identity|announce|announces|lxmf",
+#else
         "reticulum status|identity|announce|announces",
+#endif
         reticulum_commands,
         sizeof(reticulum_commands) / sizeof(reticulum_commands[0]));
 }

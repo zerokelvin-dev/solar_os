@@ -21,6 +21,9 @@ extern "C" {
 #include "solar_os_time.h"
 }
 #include "solar_os_reticulum_tcp.h"
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+#include "solar_os_lxmf_internal.h"
+#endif
 
 namespace {
 
@@ -386,6 +389,9 @@ esp_err_t solar_os_reticulum_start(const char *server, uint16_t server_port)
         tcp_interface.mode(RNS::Type::Interface::MODE_FULL);
         RNS::Transport::register_interface(tcp_interface);
         tcp_interface.start();
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+        (void)solar_os::lxmf::attach(identity);
+#endif
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "start failed: %s", failure.what());
         counters.exceptions++;
@@ -410,6 +416,9 @@ esp_err_t solar_os_reticulum_stop(void)
         return ESP_OK;
     }
     running = false;
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    solar_os::lxmf::detach();
+#endif
     try {
         RNS::Transport::persist_data();
         tcp_interface.stop();
@@ -436,6 +445,9 @@ void solar_os_reticulum_loop_once(void)
     }
     try {
         reticulum.loop();
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+        solar_os::lxmf::tick();
+#endif
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "loop exception: %s", failure.what());
         counters.exceptions++;

@@ -140,7 +140,7 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `messages` | `messages send <conversation-id> <text> [--allow-untrusted]` | Queue an outbound message; discovered direct endpoints require the explicit flag. |
 | `messages` | `messages read <conversation-id>` | Mark a conversation and its linked Inbox entries read. |
 | `messages` | `messages delete <message-id>` | Delete one retained message and its linked Inbox projection by hexadecimal ID. |
-| `messages` | `messages clear <gateway\|meshcore\|link\|all>` | Clear retained history and owned Inbox projections for one provider or every messaging provider. Unrelated Inbox sources remain. |
+| `messages` | `messages clear <gateway\|meshcore\|link\|reticulum\|all>` | Clear retained history and owned Inbox projections for one provider or every messaging provider. Unrelated Inbox sources remain. |
 | `messages` | `messages outbox` | List pending outbound requests in queue order. |
 | `messages` | `messages cancel <message-id>` | Cancel a queued outbound message by the hexadecimal ID printed by `list` or `send`. |
 | `outbox` | `outbox [list]` | List pending outbound messages. Sent and failed messages remain in conversation history, not Outbox. |
@@ -1053,6 +1053,9 @@ available for the compiled board.
 | `reticulum` | `reticulum identity show\|generate\|import\|export` | Inspect or explicitly manage the private Reticulum identity. |
 | `reticulum` | `reticulum announce` | Announce the SolarOS destination to the connected Reticulum network. |
 | `reticulum` | `reticulum announces` | List announces heard from other Reticulum destinations. |
+| `reticulum` | `reticulum lxmf status` | Show the LXMF delivery destination, peer count, and message counters. |
+| `reticulum` | `reticulum lxmf announce` | Announce the LXMF delivery destination so peers can reach this node. |
+| `reticulum` | `reticulum lxmf open <destination-hex>` | Start a conversation with a peer named by its delivery destination hash. |
 | `radio` | `radio state <name> [sleep|standby|rx|tx]` | Show or change radio operating state. |
 | `radio` | `radio send <name> <text|byte...>` | Send one packet. |
 | `radio` | `radio recv <name> [timeout-ms]` | Receive one packet and print metadata plus payload. |

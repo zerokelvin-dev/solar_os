@@ -198,7 +198,7 @@ static bool messaging_text_valid(const char *text,
 static bool messaging_provider_valid(solar_os_messaging_provider_id_t provider)
 {
     return provider >= SOLAR_OS_MESSAGING_PROVIDER_GATEWAY &&
-        provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK;
+        provider <= SOLAR_OS_MESSAGING_PROVIDER_RETICULUM;
 }
 
 static size_t messaging_provider_index(
@@ -433,7 +433,7 @@ static bool messaging_record_valid(const messaging_store_record_t *record)
         return true;
     }
     return record->message.provider >= SOLAR_OS_MESSAGING_PROVIDER_GATEWAY &&
-        record->message.provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK &&
+        record->message.provider <= SOLAR_OS_MESSAGING_PROVIDER_RETICULUM &&
         record->conversation_key[0] != '\0';
 }
 
@@ -965,6 +965,8 @@ static void messaging_restore_inbox(void)
             provider = SOLAR_OS_MESSAGING_PROVIDER_MESHCORE;
         } else if (strcmp(entry->source, "link-chat") == 0) {
             provider = SOLAR_OS_MESSAGING_PROVIDER_LINK;
+        } else if (strcmp(entry->source, "reticulum") == 0) {
+            provider = SOLAR_OS_MESSAGING_PROVIDER_RETICULUM;
         } else {
             continue;
         }
@@ -1059,6 +1061,8 @@ static void messaging_publish_inbox_projection(
             "meshcore" :
         request->provider == SOLAR_OS_MESSAGING_PROVIDER_LINK ?
             "link-chat" :
+        request->provider == SOLAR_OS_MESSAGING_PROVIDER_RETICULUM ?
+            "reticulum" :
             "messages";
     const solar_os_inbox_publish_t notification = {
         .source = source,
@@ -2028,8 +2032,9 @@ static esp_err_t messaging_clear_inbox_projections(
     static const char *const gateway_sources[] = {"messages", "chat"};
     static const char *const meshcore_sources[] = {"meshcore"};
     static const char *const link_sources[] = {"link-chat", "link"};
+    static const char *const reticulum_sources[] = {"reticulum"};
     static const char *const all_sources[] = {
-        "messages", "chat", "meshcore", "link-chat", "link",
+        "messages", "chat", "meshcore", "link-chat", "link", "reticulum",
     };
     const char *const *sources = all_sources;
     size_t source_count = sizeof(all_sources) / sizeof(all_sources[0]);
@@ -2042,6 +2047,9 @@ static esp_err_t messaging_clear_inbox_projections(
     } else if (provider == SOLAR_OS_MESSAGING_PROVIDER_LINK) {
         sources = link_sources;
         source_count = sizeof(link_sources) / sizeof(link_sources[0]);
+    } else if (provider == SOLAR_OS_MESSAGING_PROVIDER_RETICULUM) {
+        sources = reticulum_sources;
+        source_count = sizeof(reticulum_sources) / sizeof(reticulum_sources[0]);
     }
     size_t deleted = 0;
     return solar_os_inbox_delete_sources(sources, source_count, &deleted);
