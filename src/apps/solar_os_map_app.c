@@ -15,6 +15,9 @@
 
 #define MAP_APP_SELF_POLL_MS 5000U
 #define MAP_APP_WORLD_SCALE_M 200000U
+/* The system status bar owns the top of a graphical session and draws over
+ * whatever is under it, so the map starts below it and claims no title row
+ * of its own. */
 #define MAP_APP_HEADER_H 14
 #define MAP_APP_INFO_H 12
 
@@ -32,6 +35,7 @@ typedef struct {
     size_t scale;
     bool follow_self;
     bool centered;
+    bool needs_render;
     char feedback[48];
 } map_app_state_t;
 
@@ -290,34 +294,39 @@ static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
 {
     char line[96];
     const solar_os_map_point_t *point = map_app_selected();
+    char distance[16];
+    solar_os_map_format_distance(solar_os_map_scale_meters_per_col(map_app.scale),
+                                 distance,
+                                 sizeof(distance));
     if (map_app.feedback[0] != '\0') {
         strlcpy(line, map_app.feedback, sizeof(line));
     } else if (point == NULL) {
         snprintf(line,
                  sizeof(line),
-                 map_app.count == 0U ? "no positions yet"
-                                     : "%u points, Tab selects",
-                 (unsigned)map_app.count);
+                 "%u points  %s/px%s",
+                 (unsigned)map_app.total,
+                 distance,
+                 map_app.follow_self ? "  following" : "");
     } else {
         char coord[SOLAR_OS_MAP_COORD_TEXT_MAX];
         char age[8];
         char away[32] = "";
+        char reach[16];
         solar_os_map_format_coord(point->latitude_e7, point->longitude_e7, coord);
         map_app_format_age(point->updated_ms, age, sizeof(age));
         const solar_os_map_point_t *self = map_app_self();
         if (self != NULL && self->id != point->id) {
-            char distance[16];
             solar_os_map_format_distance(
                 solar_os_map_distance_m(self->latitude_e7,
                                         self->longitude_e7,
                                         point->latitude_e7,
                                         point->longitude_e7),
-                distance,
-                sizeof(distance));
+                reach,
+                sizeof(reach));
             snprintf(away,
                      sizeof(away),
                      " %s %03u",
-                     distance,
+                     reach,
                      (unsigned)solar_os_map_bearing_deg(self->latitude_e7,
                                                         self->longitude_e7,
                                                         point->latitude_e7,
@@ -339,6 +348,7 @@ static void map_app_render(solar_os_context_t *ctx)
     if (gfx == NULL) {
         return;
     }
+    map_app.needs_render = false;
     const int width = (int)solar_os_gfx_width(gfx);
     const int height = (int)solar_os_gfx_height(gfx);
     const int area = map_app_area_height(gfx);
@@ -368,24 +378,6 @@ static void map_app_render(solar_os_context_t *ctx)
     }
 
     map_app_draw_scale_bar(gfx, MAP_APP_HEADER_H + area);
-
-    char title[64];
-    char distance[16];
-    solar_os_map_format_distance(solar_os_map_scale_meters_per_col(map_app.scale),
-                                 distance,
-                                 sizeof(distance));
-    snprintf(title,
-             sizeof(title),
-             "Map  %u points  %s/px%s",
-             (unsigned)map_app.total,
-             distance,
-             map_app.follow_self ? "  following" : "");
-    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
-    solar_os_gfx_fill_rect(gfx, 0, 0, width, MAP_APP_HEADER_H);
-    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
-    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
-    solar_os_gfx_text(gfx, 3, MAP_APP_HEADER_H - 4, title);
-
     map_app_draw_info(gfx, height - MAP_APP_INFO_H, width);
     map_app.feedback[0] = '\0';
     solar_os_gfx_present(gfx);
@@ -505,6 +497,12 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
     map_app_poll_self();
     map_app_refresh();
     map_app_render(ctx);
+    /*
+     * Becoming the foreground session clears the display after the app has
+     * started, so the first frame has to be drawn again once the session is
+     * showing rather than only when a point changes.
+     */
+    map_app.needs_render = true;
     return ESP_OK;
 }
 
@@ -520,6 +518,7 @@ static void map_app_resume(solar_os_context_t *ctx)
 {
     map_app_refresh();
     map_app_render(ctx);
+    map_app.needs_render = true;
 }
 
 static void map_app_title(solar_os_context_t *ctx, char *buffer, size_t buffer_len)
@@ -543,6 +542,9 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         if (solar_os_map_get_status(&status) == ESP_OK &&
             status.generation != map_app.generation) {
             map_app_refresh();
+            map_app.needs_render = true;
+        }
+        if (map_app.needs_render) {
             map_app_render(ctx);
         }
         return true;

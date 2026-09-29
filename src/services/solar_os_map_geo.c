@@ -67,7 +67,7 @@ uint16_t solar_os_map_bearing_deg(int32_t lat_a_e7,
     return (uint16_t)(rounded % 360L);
 }
 
-#define MAP_PROJECT_LIMIT 30000.0
+#define MAP_PROJECT_LIMIT 30000.0F
 #define MAP_LON_FULL_E7 3600000000LL
 
 int32_t solar_os_map_relative_lon(const solar_os_map_view_t *view,
@@ -94,16 +94,23 @@ void solar_os_map_project_raw(const solar_os_map_view_t *view,
     if (view == NULL || view->meters_per_col == 0U) {
         return;
     }
-    const double center_lat = (double)view->center_lat_e7 / MAP_E7;
-    const double d_lon =
-        (double)solar_os_map_relative_lon(view, lon_e7) / MAP_E7;
-    const double d_lat = ((double)lat_e7 - (double)view->center_lat_e7) / MAP_E7;
-    const double cell = (double)view->meters_per_col;
-    const double east_m = d_lon * cos(center_lat * MAP_DEG_TO_RAD) *
-                          MAP_METERS_PER_DEGREE;
-    const double north_m = d_lat * MAP_METERS_PER_DEGREE;
-    double c = (double)(view->cols / 2U) + floor(east_m / cell + 0.5);
-    double r = (double)(view->rows / 2U) + floor(-north_m / cell + 0.5);
+    /*
+     * Single precision throughout: a coastline is thousands of vertices a
+     * frame, and the ESP32 has no double-precision unit, so doubles here
+     * cost more than the whole rest of the draw. A float carries about a
+     * metre of precision at these magnitudes, well under one pixel.
+     */
+    const float center_lat = (float)view->center_lat_e7 / (float)MAP_E7;
+    const float d_lon =
+        (float)solar_os_map_relative_lon(view, lon_e7) / (float)MAP_E7;
+    const float d_lat =
+        (float)(lat_e7 - view->center_lat_e7) / (float)MAP_E7;
+    const float cell = (float)view->meters_per_col;
+    const float east_m = d_lon * cosf(center_lat * (float)MAP_DEG_TO_RAD) *
+                         (float)MAP_METERS_PER_DEGREE;
+    const float north_m = d_lat * (float)MAP_METERS_PER_DEGREE;
+    float c = (float)(view->cols / 2U) + floorf(east_m / cell + 0.5F);
+    float r = (float)(view->rows / 2U) + floorf(-north_m / cell + 0.5F);
     if (c > MAP_PROJECT_LIMIT) {
         c = MAP_PROJECT_LIMIT;
     } else if (c < -MAP_PROJECT_LIMIT) {
@@ -114,6 +121,7 @@ void solar_os_map_project_raw(const solar_os_map_view_t *view,
     } else if (r < -MAP_PROJECT_LIMIT) {
         r = -MAP_PROJECT_LIMIT;
     }
+
     if (x != NULL) {
         *x = (int)c;
     }
