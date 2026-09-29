@@ -155,6 +155,31 @@ static void map_app_format_age(uint32_t updated_ms, char *text, size_t text_len)
     }
 }
 
+/*
+ * Layers can be loaded while the app is open, so the scratch buffer is
+ * sized against whatever is loaded now rather than against what was loaded
+ * when the app started. Without this a layer added later would have its
+ * longest rings silently dropped.
+ */
+static void map_app_size_scratch(void)
+{
+    const size_t longest = solar_os_map_layer_longest_ring();
+    if (longest == 0U || longest <= map_app.scratch_max) {
+        return;
+    }
+    solar_os_gfx_point_t *grown =
+        solar_os_memory_calloc(longest,
+                               sizeof(*grown),
+                               SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+                               "app.map.rings");
+    if (grown == NULL) {
+        return;
+    }
+    solar_os_memory_free(map_app.scratch);
+    map_app.scratch = grown;
+    map_app.scratch_max = longest;
+}
+
 /* Geometry is drawn from rings of coordinates, so it needs no tiles. */
 static void map_app_draw_geometry(solar_os_gfx_t *gfx,
                                   const solar_os_map_view_t *view,
@@ -243,6 +268,7 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
 static void map_app_draw_layers(solar_os_gfx_t *gfx,
                                 const solar_os_map_view_t *view)
 {
+    map_app_size_scratch();
     for (size_t index = 0U; index < solar_os_map_layer_count(); index++) {
         map_app_draw_geometry(gfx, view, solar_os_map_layer(index));
     }
@@ -488,17 +514,7 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
     if (map_app.points == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    map_app.scratch_max = solar_os_map_layer_longest_ring();
-    if (map_app.scratch_max > 0U) {
-        map_app.scratch =
-            solar_os_memory_calloc(map_app.scratch_max,
-                                   sizeof(*map_app.scratch),
-                                   SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
-                                   "app.map.rings");
-        if (map_app.scratch == NULL) {
-            map_app.scratch_max = 0U;
-        }
-    }
+    map_app_size_scratch();
     map_app_world_view(solar_os_context_gfx(ctx));
     map_app_poll_self();
     map_app_refresh();
