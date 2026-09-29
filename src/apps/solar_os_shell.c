@@ -10131,11 +10131,34 @@ static bool shell_handle_log_follow_event(solar_os_context_t *ctx, const solar_o
     return false;
 }
 
+#ifdef SOLAR_OS_BOARD_SHELL_KEY_ACTIONS
+static const struct {
+    uint8_t key;
+    const char *command;
+} shell_key_actions[] = SOLAR_OS_BOARD_SHELL_KEY_ACTIONS;
+#endif
+
 static void shell_handle_char(solar_os_context_t *ctx, char ch)
 {
     const bool repeated_tab = ch == '\t' && shell_session(ctx)->previous_key_was_tab;
 
     shell_session(ctx)->previous_key_was_tab = ch == '\t';
+
+#ifdef SOLAR_OS_BOARD_SHELL_KEY_ACTIONS
+    /* Board keys with a fixed action run it from an empty prompt only, so
+     * apps keep their own function-key behavior and typing is never hijacked. */
+    if (shell_session(ctx)->input_len == 0) {
+        for (size_t i = 0; i < sizeof(shell_key_actions) / sizeof(shell_key_actions[0]); i++) {
+            if (shell_key_actions[i].key == (uint8_t)ch) {
+                solar_os_shell_io_newline(shell_io(ctx));
+                if (shell_execute_line(ctx, shell_key_actions[i].command, false, NULL, 0)) {
+                    shell_prompt(ctx);
+                }
+                return;
+            }
+        }
+    }
+#endif
 
     switch ((uint8_t)ch) {
     case SOLAR_OS_KEY_UP:
