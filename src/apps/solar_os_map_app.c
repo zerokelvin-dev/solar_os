@@ -754,7 +754,6 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
     case 'n':
         map_app_select_next(true);
         break;
-    case SOLAR_OS_KEY_BACKTAB:
     case 'p':
         map_app_select_next(false);
         break;

@@ -2161,8 +2161,7 @@ static bool chat_event(solar_os_context_t *ctx, const solar_os_event_t *event)
         solar_os_context_finish(ctx, 0, NULL);
         return true;
     }
-    if (ch == '\t' || ch == SOLAR_OS_KEY_BACKTAB) {
-        /* Two panes, so forwards and backwards land in the same place. */
+    if (ch == '\t') {
         chat_app.tab = chat_app.tab == CHAT_APP_TAB_CHANNELS ?
             CHAT_APP_TAB_CHAT : CHAT_APP_TAB_CHANNELS;
         chat_app.redraw = true;

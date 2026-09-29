@@ -282,13 +282,13 @@ static void process_pending_key(solar_os_stc8h_device_t *device,
         if (esp_timer_get_time() >= device->compose_deadline_us) {
             device->compose_armed = false;
         } else if (key == SOLAR_OS_KEY_UP || key == SOLAR_OS_KEY_DOWN ||
-                   key == SOLAR_OS_KEY_LEFT || key == SOLAR_OS_KEY_RIGHT) {
+                   key == SOLAR_OS_KEY_RIGHT) {
             /*
-             * Composed up and down scroll, and composed left and right move
-             * between panes. The keypad cannot send tab at all, so this is
-             * the only way to reach it, and reaching it one key from the
-             * Message key is worth more than reaching the ends of a line.
-             * The layer stays armed so a run of presses keeps working.
+             * Composed up and down scroll, and composed right is tab, which
+             * the keypad cannot send any other way. Composed left is left:
+             * tabbing backwards would need a key of its own, and one key
+             * for it is more than it is worth. The layer stays armed so a
+             * run of presses keeps working.
              */
             switch (key) {
             case SOLAR_OS_KEY_UP:
@@ -296,9 +296,6 @@ static void process_pending_key(solar_os_stc8h_device_t *device,
                 break;
             case SOLAR_OS_KEY_DOWN:
                 key = SOLAR_OS_KEY_PAGE_DOWN;
-                break;
-            case SOLAR_OS_KEY_LEFT:
-                key = SOLAR_OS_KEY_BACKTAB;
                 break;
             default:
                 key = (uint8_t)'\t';
