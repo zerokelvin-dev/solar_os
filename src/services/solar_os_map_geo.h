@@ -17,6 +17,23 @@ typedef struct {
     size_t rows;
 } solar_os_map_view_t;
 
+/*
+ * Longitude relative to the view centre, normalised to plus or minus 180
+ * degrees. Two vertices of one segment whose relative longitudes differ by
+ * more than 180 degrees lie either side of the meridian opposite the view
+ * centre, where the projection wraps.
+ */
+int32_t solar_os_map_relative_lon(const solar_os_map_view_t *view,
+                                  int32_t lon_e7);
+
+/* Pixel coordinates without a bounds check, clamped so a polygon that runs
+ * far off screen still rasterises. */
+void solar_os_map_project_raw(const solar_os_map_view_t *view,
+                              int32_t lat_e7,
+                              int32_t lon_e7,
+                              int *x,
+                              int *y);
+
 bool solar_os_map_coord_valid(int32_t lat_e7, int32_t lon_e7);
 
 /* Great-circle distance in metres and initial bearing in degrees (0 = north). */
@@ -30,9 +47,8 @@ uint16_t solar_os_map_bearing_deg(int32_t lat_a_e7,
                                   int32_t lon_b_e7);
 
 /*
- * Equirectangular projection around the view centre. A terminal cell is about
- * twice as tall as wide, so a row spans two column widths of ground distance.
- * Returns false when the cell falls outside the view.
+ * Equirectangular projection around the view centre, into square pixels.
+ * Returns false when the pixel falls outside the view.
  */
 bool solar_os_map_project(const solar_os_map_view_t *view,
                           int32_t lat_e7,

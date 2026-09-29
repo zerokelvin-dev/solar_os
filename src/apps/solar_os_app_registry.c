@@ -245,7 +245,7 @@ static const solar_os_app_registry_entry_t registered_apps[] = {
     APP_ENTRY("inbox", "universal incoming-message browser", &solar_os_inbox_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "inbox", 1, 1),
 #endif
 #if SOLAR_OS_PACKAGE_APP_MAP
-    APP_ENTRY("map", "plot points on a map", &solar_os_map_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "map", 1, 1),
+    APP_ENTRY("map", "plot points on a map", &solar_os_map_app, SOLAR_OS_APP_CAP_GRAPHICS | SOLAR_OS_APP_CAP_DISPLAY, "map", 1, 1),
 #endif
 #if SOLAR_OS_PACKAGE_APP_LESS
     APP_ENTRY("less", "text file pager", &solar_os_less_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "less <file>", 2, 2),

@@ -71,16 +71,39 @@ static void test_project(void)
     assert(solar_os_map_project(&view, TORONTO_LAT, TORONTO_LON, &col, &row));
     assert(col == 40U && row == 10U);
 
-    /* One column east is meters_per_col metres east; a row is twice that. */
+    /* Pixels are square: a row covers the same ground as a column. */
     int32_t lat = 0;
     int32_t lon = 0;
     solar_os_map_offset(TORONTO_LAT, TORONTO_LON, 100, 0, &lat, &lon);
     assert(solar_os_map_project(&view, lat, lon, &col, &row));
     assert(col == 41U && row == 10U);
 
-    solar_os_map_offset(TORONTO_LAT, TORONTO_LON, 0, 200, &lat, &lon);
+    solar_os_map_offset(TORONTO_LAT, TORONTO_LON, 0, 100, &lat, &lon);
     assert(solar_os_map_project(&view, lat, lon, &col, &row));
     assert(col == 40U && row == 9U);
+
+    /* Geometry far outside the view still projects, clamped, so a polygon
+     * crossing the screen still rasterises. */
+    int x = 0;
+    int y = 0;
+    solar_os_map_project_raw(&view, -TORONTO_LAT, -TORONTO_LON, &x, &y);
+    assert(x >= -30000 && x <= 30000 && y >= -30000 && y <= 30000);
+
+    /*
+     * Longitude wraps at the meridian opposite the view centre. Two points
+     * a fraction of a degree apart there get relative longitudes at
+     * opposite extremes, which is how a renderer knows to break the line
+     * between them rather than draw it back across the whole map.
+     */
+    assert(solar_os_map_relative_lon(&view, TORONTO_LON) == 0);
+    const int32_t before = solar_os_map_relative_lon(&view, 1003841880);
+    const int32_t after = solar_os_map_relative_lon(&view, 1008933560);
+    assert(before > 1790000000 && before <= SOLAR_OS_MAP_LON_MAX_E7);
+    assert(after < -1790000000 && after >= -SOLAR_OS_MAP_LON_MAX_E7);
+    assert((int64_t)after - (int64_t)before < -SOLAR_OS_MAP_LON_MAX_E7);
+    /* Points either side of the centre stay adjacent. */
+    assert(solar_os_map_relative_lon(&view, TORONTO_LON + 10000000) == 10000000);
+    assert(solar_os_map_relative_lon(&view, TORONTO_LON - 10000000) == -10000000);
 
     /* Ottawa is far outside a view 8 km wide. */
     assert(!solar_os_map_project(&view, OTTAWA_LAT, OTTAWA_LON, &col, &row));
@@ -98,7 +121,7 @@ static void test_project(void)
     }
 
     assert(solar_os_map_scale_meters_per_col(solar_os_map_scale_index(150U)) == 100U);
-    assert(solar_os_map_scale_meters_per_col(solar_os_map_scale_index(1U)) == 10U);
+    assert(solar_os_map_scale_meters_per_col(solar_os_map_scale_index(0U)) == 1U);
 }
 
 static void test_text(void)

@@ -12,10 +12,11 @@
 #define MAP_DEG_TO_RAD 0.017453292519943295
 #define MAP_E7 10000000.0
 
+/* Metres of ground per pixel. */
 static const uint32_t map_scales[] = {
-    10U,      20U,      50U,      100U,     200U,     500U,     1000U,
-    2000U,    5000U,    10000U,   20000U,   50000U,   100000U,  200000U,
-    500000U,  1000000U, 2000000U, 5000000U,
+    1U,      2U,      5U,      10U,     20U,     50U,     100U,
+    200U,    500U,    1000U,   2000U,   5000U,   10000U,  20000U,
+    50000U,  100000U, 200000U,
 };
 
 bool solar_os_map_coord_valid(int32_t lat_e7, int32_t lon_e7)
@@ -66,6 +67,61 @@ uint16_t solar_os_map_bearing_deg(int32_t lat_a_e7,
     return (uint16_t)(rounded % 360L);
 }
 
+#define MAP_PROJECT_LIMIT 30000.0
+#define MAP_LON_FULL_E7 3600000000LL
+
+int32_t solar_os_map_relative_lon(const solar_os_map_view_t *view,
+                                  int32_t lon_e7)
+{
+    if (view == NULL) {
+        return lon_e7;
+    }
+    int64_t delta = (int64_t)lon_e7 - (int64_t)view->center_lon_e7;
+    if (delta > SOLAR_OS_MAP_LON_MAX_E7) {
+        delta -= MAP_LON_FULL_E7;
+    } else if (delta < -SOLAR_OS_MAP_LON_MAX_E7) {
+        delta += MAP_LON_FULL_E7;
+    }
+    return (int32_t)delta;
+}
+
+void solar_os_map_project_raw(const solar_os_map_view_t *view,
+                              int32_t lat_e7,
+                              int32_t lon_e7,
+                              int *x,
+                              int *y)
+{
+    if (view == NULL || view->meters_per_col == 0U) {
+        return;
+    }
+    const double center_lat = (double)view->center_lat_e7 / MAP_E7;
+    const double d_lon =
+        (double)solar_os_map_relative_lon(view, lon_e7) / MAP_E7;
+    const double d_lat = ((double)lat_e7 - (double)view->center_lat_e7) / MAP_E7;
+    const double cell = (double)view->meters_per_col;
+    const double east_m = d_lon * cos(center_lat * MAP_DEG_TO_RAD) *
+                          MAP_METERS_PER_DEGREE;
+    const double north_m = d_lat * MAP_METERS_PER_DEGREE;
+    double c = (double)(view->cols / 2U) + floor(east_m / cell + 0.5);
+    double r = (double)(view->rows / 2U) + floor(-north_m / cell + 0.5);
+    if (c > MAP_PROJECT_LIMIT) {
+        c = MAP_PROJECT_LIMIT;
+    } else if (c < -MAP_PROJECT_LIMIT) {
+        c = -MAP_PROJECT_LIMIT;
+    }
+    if (r > MAP_PROJECT_LIMIT) {
+        r = MAP_PROJECT_LIMIT;
+    } else if (r < -MAP_PROJECT_LIMIT) {
+        r = -MAP_PROJECT_LIMIT;
+    }
+    if (x != NULL) {
+        *x = (int)c;
+    }
+    if (y != NULL) {
+        *y = (int)r;
+    }
+}
+
 bool solar_os_map_project(const solar_os_map_view_t *view,
                           int32_t lat_e7,
                           int32_t lon_e7,
@@ -76,32 +132,17 @@ bool solar_os_map_project(const solar_os_map_view_t *view,
         view->meters_per_col == 0U) {
         return false;
     }
-    const double center_lat = (double)view->center_lat_e7 / MAP_E7;
-    double d_lon = ((double)lon_e7 - (double)view->center_lon_e7) / MAP_E7;
-    if (d_lon > 180.0) {
-        d_lon -= 360.0;
-    } else if (d_lon < -180.0) {
-        d_lon += 360.0;
-    }
-    const double d_lat = ((double)lat_e7 - (double)view->center_lat_e7) / MAP_E7;
-    const double east_m = d_lon * cos(center_lat * MAP_DEG_TO_RAD) *
-                          MAP_METERS_PER_DEGREE;
-    const double north_m = d_lat * MAP_METERS_PER_DEGREE;
-    const double cell_w = (double)view->meters_per_col;
-    const double cell_h = cell_w * 2.0;
-    const double col_offset = floor(east_m / cell_w + 0.5);
-    const double row_offset = floor(-north_m / cell_h + 0.5);
-    const double c = (double)(view->cols / 2U) + col_offset;
-    const double r = (double)(view->rows / 2U) + row_offset;
-    if (c < 0.0 || r < 0.0 || c >= (double)view->cols ||
-        r >= (double)view->rows) {
+    int x = 0;
+    int y = 0;
+    solar_os_map_project_raw(view, lat_e7, lon_e7, &x, &y);
+    if (x < 0 || y < 0 || (size_t)x >= view->cols || (size_t)y >= view->rows) {
         return false;
     }
     if (col != NULL) {
-        *col = (size_t)c;
+        *col = (size_t)x;
     }
     if (row != NULL) {
-        *row = (size_t)r;
+        *row = (size_t)y;
     }
     return true;
 }

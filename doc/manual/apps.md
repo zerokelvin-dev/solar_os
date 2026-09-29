@@ -888,12 +888,16 @@ storage, and verification details.
 
 ## map
 
-Map of geo-tagged points published by any part of the system. The service is a
-sink like the inbox: GNSS publishes your own position, MeshCore publishes chat
-adverts that carry a position, and the shell publishes waypoints. Points live
-in RAM only.
+Map of geo-tagged points published by any part of the system, drawn over a
+world coastline. The service is a sink like the inbox: GNSS publishes your own
+position, MeshCore publishes chat adverts that carry a position, and the shell
+publishes waypoints. Points live in RAM only.
 
-Open the map:
+The coastline is Natural Earth 1:110m compiled into the firmware, so the map
+needs no tile service, no account, no network, and no storage. `map load` adds
+finer geometry from a GeoJSON or packed file on top of it.
+
+Open the map on a display:
 
 ```text
 map
@@ -917,10 +921,13 @@ map add LABEL LATITUDE LONGITUDE
 map remove ID
 map clear [SOURCE]
 map fix
+map layers
+map load PATH
+map unload INDEX|all
 ```
 
 Coordinates are decimal degrees, signed or with an `N`/`S`/`E`/`W` suffix. See
-[Map](map.md) for the projection and the point-source table.
+[Map](map.md) for layers, the projection, and the point-source table.
 
 ## contacts
 

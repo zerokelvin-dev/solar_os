@@ -1313,7 +1313,8 @@ static const char * const inbox_notify_values[] = {"on", "off", "test"};
 #endif
 #if SOLAR_OS_PACKAGE_APP_MAP
 static const char * const map_subcommands[] = {
-    "status", "list", "add", "remove", "clear", "fix"
+    "status", "list", "add", "remove", "clear", "fix", "layers", "load",
+    "unload"
 };
 #endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS

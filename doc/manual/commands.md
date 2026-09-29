@@ -122,6 +122,9 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `map` | `map remove <id>` | Remove one point by its decimal ID. |
 | `map` | `map clear [source]` | Remove every point, or every point from one source. |
 | `map` | `map fix` | Publish the current GNSS position as your own point. |
+| `map` | `map layers` | List the built-in world coastline and any loaded layers. |
+| `map` | `map load <path>` | Add a GeoJSON or packed geometry layer on top of the built-in world. |
+| `map` | `map unload <index\|all>` | Remove one loaded layer, or every loaded layer. |
 | `contacts` | `contacts` | Open the searchable provider-neutral contact browser. |
 | `contacts` | `contacts status` | Show contact, endpoint, persistence, PSRAM, and opaque-credential counts. |
 | `contacts` | `contacts list [all\|discovered\|trusted\|blocked]` | List contacts, optionally filtered by endpoint trust. |

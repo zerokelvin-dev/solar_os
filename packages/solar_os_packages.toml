@@ -851,6 +851,9 @@ label = "service.map"
 depends = ["service_gnss"]
 sources = [
   "services/solar_os_map.c",
+  "services/solar_os_map_basemap_world.c",
+  "services/solar_os_map_geojson.c",
+  "services/solar_os_map_layers.c",
   "services/solar_os_map_geo.c",
   "services/solar_os_map_gnss.c",
 ]

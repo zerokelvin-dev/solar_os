@@ -7,20 +7,21 @@
 #include <string.h>
 
 #include "esp_timer.h"
+#include "solar_os_gfx.h"
 #include "solar_os_keys.h"
 #include "solar_os_map.h"
+#include "solar_os_map_layers.h"
 #include "solar_os_memory.h"
-#include "solar_os_terminal.h"
-#include "solar_os_tui.h"
-#include "solar_os_tui_widgets.h"
 
 #define MAP_APP_SELF_POLL_MS 5000U
-#define MAP_APP_DEFAULT_SCALE_M 100U
-#define MAP_APP_LABEL_COLS 10U
+#define MAP_APP_WORLD_SCALE_M 200000U
+#define MAP_APP_HEADER_H 14
+#define MAP_APP_INFO_H 12
 
 typedef struct {
-    solar_os_tui_t tui;
     solar_os_map_point_t *points;
+    solar_os_gfx_point_t *scratch;
+    size_t scratch_max;
     size_t count;
     size_t total;
     uint32_t generation;
@@ -31,7 +32,7 @@ typedef struct {
     size_t scale;
     bool follow_self;
     bool centered;
-    char feedback[64];
+    char feedback[48];
 } map_app_state_t;
 
 static void *map_app_state;
@@ -62,14 +63,30 @@ static const solar_os_map_point_t *map_app_selected(void)
     return NULL;
 }
 
-static size_t map_app_map_rows(void)
+static int map_app_area_height(const solar_os_gfx_t *gfx)
 {
-    const size_t rows = solar_os_tui_screen_content_rows(&map_app.tui, 1U, 1U);
-    return rows > 1U ? rows - 1U : 0U;
+    const int height = (int)solar_os_gfx_height(gfx) - MAP_APP_HEADER_H -
+                       MAP_APP_INFO_H;
+    return height > 0 ? height : 0;
 }
 
-static void map_app_fit(void)
+static solar_os_map_view_t map_app_view(const solar_os_gfx_t *gfx)
 {
+    const solar_os_map_view_t view = {
+        .center_lat_e7 = map_app.center_lat_e7,
+        .center_lon_e7 = map_app.center_lon_e7,
+        .meters_per_col = solar_os_map_scale_meters_per_col(map_app.scale),
+        .cols = solar_os_gfx_width(gfx),
+        .rows = (size_t)map_app_area_height(gfx),
+    };
+    return view;
+}
+
+static void map_app_fit(const solar_os_gfx_t *gfx)
+{
+    if (gfx == NULL || map_app.count == 0U) {
+        return;
+    }
     int32_t lat[SOLAR_OS_MAP_CAPACITY];
     int32_t lon[SOLAR_OS_MAP_CAPACITY];
     for (size_t i = 0; i < map_app.count; i++) {
@@ -81,8 +98,8 @@ static void map_app_fit(void)
                                            map_app.count,
                                            map_app.center_lat_e7,
                                            map_app.center_lon_e7,
-                                           solar_os_tui_cols(&map_app.tui),
-                                           map_app_map_rows());
+                                           solar_os_gfx_width(gfx),
+                                           (size_t)map_app_area_height(gfx));
 }
 
 static void map_app_center_on(const solar_os_map_point_t *point)
@@ -111,7 +128,6 @@ static void map_app_refresh(void)
     } else if (!map_app.centered && map_app.count > 0) {
         map_app_center_on(self != NULL ? self : &map_app.points[0]);
         map_app.follow_self = self != NULL;
-        map_app_fit();
     }
 }
 
@@ -133,160 +149,246 @@ static void map_app_format_age(uint32_t updated_ms, char *text, size_t text_len)
     }
 }
 
-static char map_app_glyph(const solar_os_map_point_t *point)
+/* Geometry is drawn from rings of coordinates, so it needs no tiles. */
+static void map_app_draw_geometry(solar_os_gfx_t *gfx,
+                                  const solar_os_map_view_t *view,
+                                  const solar_os_map_geometry_t *geometry)
 {
-    switch (point->kind) {
-    case SOLAR_OS_MAP_KIND_SELF:
-        return '@';
-    case SOLAR_OS_MAP_KIND_WAYPOINT:
-        return '+';
-    default:
-        return 'o';
+    if (geometry == NULL || map_app.scratch == NULL) {
+        return;
+    }
+    for (uint32_t index = 0U; index < geometry->ring_count; index++) {
+        solar_os_map_ring_t ring;
+        if (!solar_os_map_geometry_ring(geometry, index, &ring) ||
+            ring.point_count > map_app.scratch_max) {
+            continue;
+        }
+        int left = 0;
+        int right = 0;
+        int top = 0;
+        int bottom = 0;
+        for (size_t point = 0U; point < ring.point_count; point++) {
+            int x = 0;
+            int y = 0;
+            solar_os_map_project_raw(view,
+                                     ring.coordinates[point * 2U],
+                                     ring.coordinates[point * 2U + 1U],
+                                     &x,
+                                     &y);
+            map_app.scratch[point].x = x;
+            map_app.scratch[point].y = y + MAP_APP_HEADER_H;
+            if (point == 0U) {
+                left = right = x;
+                top = bottom = y;
+            } else {
+                if (x < left) {
+                    left = x;
+                }
+                if (x > right) {
+                    right = x;
+                }
+                if (y < top) {
+                    top = y;
+                }
+                if (y > bottom) {
+                    bottom = y;
+                }
+            }
+        }
+        if (right < 0 || bottom < 0 || left >= (int)view->cols ||
+            top >= (int)view->rows) {
+            continue;
+        }
+        /*
+         * Coastlines are drawn as outlines rather than filled areas: a ring
+         * runs to hundreds of vertices, and a scanline fill of one costs
+         * more per frame than the whole map is worth on a small display.
+         *
+         * A segment wider than the view is one whose ends were clamped, or
+         * one crossing the meridian opposite the view centre, where
+         * longitude wraps. Either way it would draw a line straight across
+         * the map, so it is left out.
+         */
+        const int span = (int)view->cols;
+        const size_t segments =
+            ring.open ? ring.point_count - 1U : ring.point_count;
+        solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+        for (size_t point = 0U; point < segments; point++) {
+            const size_t next = (point + 1U) % ring.point_count;
+            const int64_t d_lon =
+                (int64_t)solar_os_map_relative_lon(
+                    view, ring.coordinates[next * 2U + 1U]) -
+                (int64_t)solar_os_map_relative_lon(
+                    view, ring.coordinates[point * 2U + 1U]);
+            if (d_lon > SOLAR_OS_MAP_LON_MAX_E7 ||
+                d_lon < -SOLAR_OS_MAP_LON_MAX_E7) {
+                continue;
+            }
+            const solar_os_gfx_point_t *a = &map_app.scratch[point];
+            const solar_os_gfx_point_t *b = &map_app.scratch[next];
+            if (b->x - a->x > span || a->x - b->x > span) {
+                continue;
+            }
+            solar_os_gfx_line(gfx, a->x, a->y, b->x, b->y);
+        }
     }
 }
 
-static void map_app_draw_scale_bar(size_t map_rows, size_t cols)
+static void map_app_draw_layers(solar_os_gfx_t *gfx,
+                                const solar_os_map_view_t *view)
 {
-    const uint32_t meters = solar_os_map_scale_meters_per_col(map_app.scale);
-    const size_t bar = cols > 24U ? 10U : 5U;
-    char distance[16];
-    char line[48];
-    solar_os_map_format_distance((uint32_t)(meters * bar), distance, sizeof(distance));
-    snprintf(line, sizeof(line), "|%.*s| %s", (int)(bar - 2U), "----------", distance);
-    solar_os_tui_addstr(&map_app.tui, map_rows, 0U, line, SOLAR_OS_TUI_ATTR_NORMAL);
+    for (size_t index = 0U; index < solar_os_map_layer_count(); index++) {
+        map_app_draw_geometry(gfx, view, solar_os_map_layer(index));
+    }
 }
 
-static void map_app_render_info(size_t row, size_t cols)
+static void map_app_draw_point(solar_os_gfx_t *gfx,
+                               const solar_os_map_point_t *point,
+                               int x,
+                               int y,
+                               bool chosen)
+{
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+    solar_os_gfx_fill_circle(gfx, x, y, 4);
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+    switch (point->kind) {
+    case SOLAR_OS_MAP_KIND_SELF:
+        solar_os_gfx_fill_circle(gfx, x, y, 3);
+        solar_os_gfx_circle(gfx, x, y, 5);
+        break;
+    case SOLAR_OS_MAP_KIND_WAYPOINT:
+        solar_os_gfx_line(gfx, x - 3, y, x + 3, y);
+        solar_os_gfx_line(gfx, x, y - 3, x, y + 3);
+        break;
+    default:
+        solar_os_gfx_circle(gfx, x, y, 3);
+        break;
+    }
+    if (chosen) {
+        solar_os_gfx_rect(gfx, x - 6, y - 6, 13, 13);
+        solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+        solar_os_gfx_text(gfx, x + 8, y + 4, point->label);
+    }
+}
+
+static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
+{
+    const uint32_t meters = solar_os_map_scale_meters_per_col(map_app.scale);
+    const int bar = 50;
+    char distance[16];
+    solar_os_map_format_distance(meters * (uint32_t)bar, distance, sizeof(distance));
+    const int y = bottom - 6;
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+    solar_os_gfx_line(gfx, 6, y, 6 + bar, y);
+    solar_os_gfx_line(gfx, 6, y - 3, 6, y + 3);
+    solar_os_gfx_line(gfx, 6 + bar, y - 3, 6 + bar, y + 3);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    solar_os_gfx_text(gfx, 6 + bar + 5, y + 3, distance);
+}
+
+static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
 {
     char line[96];
     const solar_os_map_point_t *point = map_app_selected();
-    if (point == NULL) {
+    if (map_app.feedback[0] != '\0') {
+        strlcpy(line, map_app.feedback, sizeof(line));
+    } else if (point == NULL) {
         snprintf(line,
                  sizeof(line),
-                 map_app.count == 0 ? "No positions yet (map add, or wait for a fix)"
-                                    : "%u points  Tab selects",
+                 map_app.count == 0U ? "no positions yet"
+                                     : "%u points, Tab selects",
                  (unsigned)map_app.count);
-        solar_os_tui_write_cell(&map_app.tui, row, 0U, cols, line, SOLAR_OS_TUI_ATTR_NORMAL);
-        return;
+    } else {
+        char coord[SOLAR_OS_MAP_COORD_TEXT_MAX];
+        char age[8];
+        char away[32] = "";
+        solar_os_map_format_coord(point->latitude_e7, point->longitude_e7, coord);
+        map_app_format_age(point->updated_ms, age, sizeof(age));
+        const solar_os_map_point_t *self = map_app_self();
+        if (self != NULL && self->id != point->id) {
+            char distance[16];
+            solar_os_map_format_distance(
+                solar_os_map_distance_m(self->latitude_e7,
+                                        self->longitude_e7,
+                                        point->latitude_e7,
+                                        point->longitude_e7),
+                distance,
+                sizeof(distance));
+            snprintf(away,
+                     sizeof(away),
+                     " %s %03u",
+                     distance,
+                     (unsigned)solar_os_map_bearing_deg(self->latitude_e7,
+                                                        self->longitude_e7,
+                                                        point->latitude_e7,
+                                                        point->longitude_e7));
+        }
+        snprintf(line, sizeof(line), "%s %s%s %s",
+                 point->label, coord, away, age);
     }
-
-    char coord[SOLAR_OS_MAP_COORD_TEXT_MAX];
-    char age[8];
-    char away[32] = "";
-    solar_os_map_format_coord(point->latitude_e7, point->longitude_e7, coord);
-    map_app_format_age(point->updated_ms, age, sizeof(age));
-    const solar_os_map_point_t *self = map_app_self();
-    if (self != NULL && self->id != point->id) {
-        char distance[16];
-        solar_os_map_format_distance(solar_os_map_distance_m(self->latitude_e7,
-                                                             self->longitude_e7,
-                                                             point->latitude_e7,
-                                                             point->longitude_e7),
-                                     distance,
-                                     sizeof(distance));
-        snprintf(away,
-                 sizeof(away),
-                 " %s %03u",
-                 distance,
-                 (unsigned)solar_os_map_bearing_deg(self->latitude_e7,
-                                                    self->longitude_e7,
-                                                    point->latitude_e7,
-                                                    point->longitude_e7));
-    }
-    snprintf(line,
-             sizeof(line),
-             "%c %s [%s] %s%s %s",
-             map_app_glyph(point),
-             point->label,
-             point->source,
-             coord,
-             away,
-             age);
-    solar_os_tui_write_cell(&map_app.tui, row, 0U, cols, line, SOLAR_OS_TUI_ATTR_INVERSE);
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+    solar_os_gfx_fill_rect(gfx, 0, top, width, MAP_APP_INFO_H);
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    solar_os_gfx_text(gfx, 3, top + MAP_APP_INFO_H - 3, line);
 }
 
-static void map_app_render(void)
+static void map_app_render(solar_os_context_t *ctx)
 {
-    const size_t cols = solar_os_tui_cols(&map_app.tui);
-    const size_t map_rows = map_app_map_rows();
-    char line[SOLAR_OS_TERMINAL_MAX_COLS + 1U];
-    char distance[16];
+    solar_os_gfx_t *gfx = solar_os_context_gfx(ctx);
+    if (gfx == NULL) {
+        return;
+    }
+    const int width = (int)solar_os_gfx_width(gfx);
+    const int height = (int)solar_os_gfx_height(gfx);
+    const int area = map_app_area_height(gfx);
+    const solar_os_map_view_t view = map_app_view(gfx);
 
+    solar_os_gfx_clear(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+    map_app_draw_layers(gfx, &view);
+
+    const solar_os_map_point_t *selected = map_app_selected();
+    /* Oldest first so the newest position draws on top. */
+    for (size_t i = map_app.count; i-- > 0;) {
+        const solar_os_map_point_t *point = &map_app.points[i];
+        size_t col = 0U;
+        size_t row = 0U;
+        if (!solar_os_map_project(&view,
+                                  point->latitude_e7,
+                                  point->longitude_e7,
+                                  &col,
+                                  &row)) {
+            continue;
+        }
+        map_app_draw_point(gfx,
+                           point,
+                           (int)col,
+                           (int)row + MAP_APP_HEADER_H,
+                           selected != NULL && selected->id == point->id);
+    }
+
+    map_app_draw_scale_bar(gfx, MAP_APP_HEADER_H + area);
+
+    char title[64];
+    char distance[16];
     solar_os_map_format_distance(solar_os_map_scale_meters_per_col(map_app.scale),
                                  distance,
                                  sizeof(distance));
-    snprintf(line,
-             sizeof(line),
-             "Map %u points  %s/col%s",
+    snprintf(title,
+             sizeof(title),
+             "Map  %u points  %s/px%s",
              (unsigned)map_app.total,
              distance,
              map_app.follow_self ? "  following" : "");
-    solar_os_tui_draw_title(&map_app.tui, line, NULL);
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+    solar_os_gfx_fill_rect(gfx, 0, 0, width, MAP_APP_HEADER_H);
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    solar_os_gfx_text(gfx, 3, MAP_APP_HEADER_H - 4, title);
 
-    for (size_t row = 0; row < map_rows; row++) {
-        solar_os_tui_write_cell(&map_app.tui, row + 1U, 0U, cols, "", SOLAR_OS_TUI_ATTR_NORMAL);
-    }
-
-    if (map_rows > 0U && cols > 0U) {
-        const solar_os_map_view_t view = {
-            .center_lat_e7 = map_app.center_lat_e7,
-            .center_lon_e7 = map_app.center_lon_e7,
-            .meters_per_col = solar_os_map_scale_meters_per_col(map_app.scale),
-            .cols = cols,
-            .rows = map_rows,
-        };
-        solar_os_tui_putch(&map_app.tui,
-                           1U + view.rows / 2U,
-                           view.cols / 2U,
-                           '.',
-                           SOLAR_OS_TUI_ATTR_NORMAL);
-        solar_os_tui_putch(&map_app.tui, 1U, cols - 1U, 'N', SOLAR_OS_TUI_ATTR_BOLD);
-
-        const solar_os_map_point_t *selected = map_app_selected();
-        /* Oldest first so the newest position wins a shared cell. */
-        for (size_t i = map_app.count; i-- > 0;) {
-            const solar_os_map_point_t *point = &map_app.points[i];
-            size_t col = 0;
-            size_t row = 0;
-            if (!solar_os_map_project(&view,
-                                      point->latitude_e7,
-                                      point->longitude_e7,
-                                      &col,
-                                      &row)) {
-                continue;
-            }
-            const bool chosen = selected != NULL && selected->id == point->id;
-            solar_os_tui_putch(&map_app.tui,
-                               1U + row,
-                               col,
-                               (uint32_t)(unsigned char)map_app_glyph(point),
-                               chosen ? SOLAR_OS_TUI_ATTR_INVERSE : SOLAR_OS_TUI_ATTR_BOLD);
-        }
-        if (selected != NULL) {
-            size_t col = 0;
-            size_t row = 0;
-            if (solar_os_map_project(&view,
-                                     selected->latitude_e7,
-                                     selected->longitude_e7,
-                                     &col,
-                                     &row) &&
-                col + 2U < cols) {
-                char label[MAP_APP_LABEL_COLS + 1U];
-                strlcpy(label, selected->label, sizeof(label));
-                if (col + 2U + strlen(label) > cols) {
-                    label[cols - col - 2U] = '\0';
-                }
-                solar_os_tui_addstr(&map_app.tui, 1U + row, col + 2U, label, SOLAR_OS_TUI_ATTR_NORMAL);
-            }
-        }
-        map_app_draw_scale_bar(map_rows, cols);
-    }
-
-    map_app_render_info(1U + map_rows, cols);
-    solar_os_tui_draw_footer(&map_app.tui,
-                             map_app.feedback,
-                             "arrows pan  +/- zoom  Tab select  c centre  f fit  d delete  q quit");
+    map_app_draw_info(gfx, height - MAP_APP_INFO_H, width);
     map_app.feedback[0] = '\0';
+    solar_os_gfx_present(gfx);
 }
 
 static void map_app_select_next(bool forward)
@@ -312,12 +414,17 @@ static void map_app_select_next(bool forward)
     map_app.selected_id = map_app.points[index].id;
 }
 
-static void map_app_pan(int columns, int rows)
+static void map_app_pan(solar_os_context_t *ctx, int columns, int rows)
 {
-    const int64_t east = (int64_t)columns * solar_os_map_scale_meters_per_col(map_app.scale) *
-                         (int64_t)(solar_os_tui_cols(&map_app.tui) / 4U);
-    const int64_t north = (int64_t)rows * solar_os_map_scale_meters_per_col(map_app.scale) * 2 *
-                          (int64_t)(map_app_map_rows() / 4U);
+    solar_os_gfx_t *gfx = solar_os_context_gfx(ctx);
+    if (gfx == NULL) {
+        return;
+    }
+    const int64_t meters = solar_os_map_scale_meters_per_col(map_app.scale);
+    const int64_t east = (int64_t)columns * meters *
+                         (int64_t)(solar_os_gfx_width(gfx) / 4U);
+    const int64_t north = (int64_t)rows * meters *
+                          (int64_t)(map_app_area_height(gfx) / 4);
     solar_os_map_offset(map_app.center_lat_e7,
                         map_app.center_lon_e7,
                         east,
@@ -360,7 +467,7 @@ static void map_app_delete_selected(void)
         return;
     }
     if (solar_os_map_remove(point->id) == ESP_OK) {
-        strlcpy(map_app.feedback, "point removed until it is next heard", sizeof(map_app.feedback));
+        strlcpy(map_app.feedback, "point removed", sizeof(map_app.feedback));
     }
     map_app.selected_id = 0;
     map_app_refresh();
@@ -373,6 +480,9 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
     if (err != ESP_OK) {
         return err;
     }
+    if (solar_os_context_gfx(ctx) == NULL) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     map_app.points = solar_os_memory_calloc(SOLAR_OS_MAP_CAPACITY,
                                             sizeof(*map_app.points),
                                             SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
@@ -380,34 +490,36 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
     if (map_app.points == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    err = solar_os_tui_screen_begin(&map_app.tui, ctx);
-    if (err != ESP_OK) {
-        solar_os_memory_free(map_app.points);
-        memset(&map_app, 0, sizeof(map_app));
-        return err;
+    map_app.scratch_max = solar_os_map_layer_longest_ring();
+    if (map_app.scratch_max > 0U) {
+        map_app.scratch =
+            solar_os_memory_calloc(map_app.scratch_max,
+                                   sizeof(*map_app.scratch),
+                                   SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+                                   "app.map.rings");
+        if (map_app.scratch == NULL) {
+            map_app.scratch_max = 0U;
+        }
     }
-    map_app.scale = solar_os_map_scale_index(MAP_APP_DEFAULT_SCALE_M);
+    map_app.scale = solar_os_map_scale_index(MAP_APP_WORLD_SCALE_M);
     map_app_poll_self();
     map_app_refresh();
-    map_app_render();
+    map_app_render(ctx);
     return ESP_OK;
 }
 
 static void map_app_stop(solar_os_context_t *ctx)
 {
     (void)ctx;
-    solar_os_tui_set_cursor_visible(&map_app.tui, true);
-    solar_os_tui_refresh(&map_app.tui);
-    solar_os_tui_end(&map_app.tui);
     solar_os_memory_free(map_app.points);
+    solar_os_memory_free(map_app.scratch);
     memset(&map_app, 0, sizeof(map_app));
 }
 
 static void map_app_resume(solar_os_context_t *ctx)
 {
-    (void)ctx;
     map_app_refresh();
-    map_app_render();
+    map_app_render(ctx);
 }
 
 static void map_app_title(solar_os_context_t *ctx, char *buffer, size_t buffer_len)
@@ -424,7 +536,6 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         return false;
     }
     if (event->type == SOLAR_OS_EVENT_TICK) {
-        bool redraw = false;
         if (map_app_now_ms() - map_app.last_self_poll_ms >= MAP_APP_SELF_POLL_MS) {
             map_app_poll_self();
         }
@@ -432,10 +543,7 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         if (solar_os_map_get_status(&status) == ESP_OK &&
             status.generation != map_app.generation) {
             map_app_refresh();
-            redraw = true;
-        }
-        if (redraw) {
-            map_app_render();
+            map_app_render(ctx);
         }
         return true;
     }
@@ -452,19 +560,19 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
     switch (ch) {
     case SOLAR_OS_KEY_UP:
     case 'k':
-        map_app_pan(0, -1);
+        map_app_pan(ctx, 0, 1);
         break;
     case SOLAR_OS_KEY_DOWN:
     case 'j':
-        map_app_pan(0, 1);
+        map_app_pan(ctx, 0, -1);
         break;
     case SOLAR_OS_KEY_LEFT:
     case 'h':
-        map_app_pan(-1, 0);
+        map_app_pan(ctx, -1, 0);
         break;
     case SOLAR_OS_KEY_RIGHT:
     case 'l':
-        map_app_pan(1, 0);
+        map_app_pan(ctx, 1, 0);
         break;
     case '+':
     case '=':
@@ -487,7 +595,7 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         break;
     case 'f':
     case 'F':
-        map_app_fit();
+        map_app_fit(solar_os_context_gfx(ctx));
         break;
     case 'd':
     case 'D':
@@ -502,14 +610,14 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         return true;
     }
 
-    map_app_render();
+    map_app_render(ctx);
     return true;
 }
 
 const solar_os_app_t solar_os_map_app = {
     .name = "map",
     .summary = "plot positions from GNSS, radios and networks",
-    .app_class = SOLAR_OS_APP_CLASS_TUI,
+    .app_class = SOLAR_OS_APP_CLASS_GUI,
     .flags = SOLAR_OS_APP_FLAG_RESUMABLE,
     .start = map_app_start,
     .resume = map_app_resume,
@@ -519,4 +627,5 @@ const solar_os_app_t solar_os_map_app = {
     .state_slot = &map_app_state,
     .state_size = sizeof(map_app_state_t),
     .state_storage = SOLAR_OS_APP_STATE_EXTERNAL_PREFERRED,
+    .tick_interval_ms = 500U,
 };
