@@ -51,17 +51,48 @@ map unload all
 
 Two formats are read. A GeoJSON file is parsed by a character scanner rather
 than into a document, so a large file costs only its geometry in memory;
-polygons and lines are both drawn as outlines. A packed layer produced by
-`scripts/build_map_basemap.py` costs no parsing at all and is worth
-preparing for geometry that is loaded often.
+polygons and lines are both drawn as outlines. A packed layer costs no
+parsing at all and is worth preparing for geometry that is loaded often.
+
+## Sourcing a layer
+
+Two scripts build packed layers, and neither needs an account or a key.
+
+`build_map_basemap.py` takes Natural Earth, which is public domain and
+covers the world at three levels. The 1:110m level is the one already in
+the firmware; 1:50m is the useful step up while still being a world file.
 
 ```text
-scripts/build_map_basemap.py --level 50m --output coast_50m.bin
+scripts/build_map_basemap.py --level 50m --output coast50m.bin
 ```
 
-That script downloads Natural Earth and packs it. Any other GeoJSON source
-works as it is, subject to its own licence: OpenStreetMap extracts are
-ODbL and need attribution, while Natural Earth asks for nothing.
+`build_map_layer.py` takes a bounding box from the OpenStreetMap Overpass
+API, which is where detail below a continent comes from. Overpass is a free
+shared service, so keep the boxes small; OpenStreetMap data is ODbL, so
+anything published from it owes attribution to its contributors.
+
+```text
+scripts/build_map_layer.py --bbox 43.58,-79.64,43.86,-79.12 \
+    --features coastline,water,major-roads --output toronto.bin
+```
+
+Features are `coastline`, `water`, `rivers`, `major-roads`, `roads`,
+`rail`, `buildings` and `boundary`. `--tolerance` drops vertices closer
+together than a given distance; there is no point keeping detail finer than
+a pixel at the zoom the layer is for.
+
+Match a layer to the zoom it is for. A file holding every road in a city is
+tens of thousands of line segments, and the map redraws all of them every
+second, so a layer that is far denser than the screen can show costs time
+for nothing.
+
+Getting the file onto the card: write it directly if the card is out of the
+device, or fetch it over the network from the device itself.
+
+```text
+curl -o /sdcard/toronto.bin http://192.168.1.10:8000/toronto.bin
+map load /sdcard/toronto.bin
+```
 
 ## Point sources
 

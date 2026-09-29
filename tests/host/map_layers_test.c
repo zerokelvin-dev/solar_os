@@ -43,13 +43,16 @@ static void test_builtin_world(void)
     assert(world.point_count > 4000U);
 
     size_t counted = 0U;
-    for (uint32_t index = 0U; index < world.ring_count; index++) {
-        solar_os_map_ring_t ring;
-        assert(solar_os_map_geometry_ring(&world, index, &ring));
+    uint32_t rings = 0U;
+    solar_os_map_ring_cursor_t cursor = {0};
+    solar_os_map_ring_t ring;
+    while (solar_os_map_geometry_next(&world, &cursor, &ring)) {
         assert(ring.point_count >= 3U);
         assert(!ring.open);
         counted += ring.point_count;
+        rings++;
     }
+    assert(rings == world.ring_count);
     assert(counted == world.point_count);
     assert(solar_os_map_geometry_longest_ring(&world) > 0U);
 
@@ -90,8 +93,9 @@ static void test_geojson_polygon(void)
     assert(geometry.ring_count == 1U);
     assert(geometry.point_count == 4U);
 
+    solar_os_map_ring_cursor_t cursor = {0};
     solar_os_map_ring_t ring;
-    assert(solar_os_map_geometry_ring(&geometry, 0U, &ring));
+    assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
     assert(ring.point_count == 4U);
     assert(!ring.open);
     /* GeoJSON stores longitude first; the layer stores latitude first. */
@@ -121,13 +125,15 @@ static void test_geojson_shapes(void)
     assert(geometry.ring_count == 3U);
     assert(geometry.point_count == 3U + 4U + 2U);
 
+    solar_os_map_ring_cursor_t cursor = {0};
     solar_os_map_ring_t ring;
-    assert(solar_os_map_geometry_ring(&geometry, 0U, &ring));
+    assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
     assert(ring.point_count == 3U && !ring.open);
-    assert(solar_os_map_geometry_ring(&geometry, 1U, &ring));
+    assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
     assert(ring.point_count == 4U && !ring.open);
-    assert(solar_os_map_geometry_ring(&geometry, 2U, &ring));
+    assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
     assert(ring.point_count == 2U && ring.open);
+    assert(!solar_os_map_geometry_next(&geometry, &cursor, &ring));
     assert(ring.coordinates[0] == 436500000);
     assert(ring.coordinates[1] == -793800000);
     free(packed);

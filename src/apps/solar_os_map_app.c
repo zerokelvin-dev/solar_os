@@ -188,10 +188,10 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
     if (geometry == NULL || map_app.scratch == NULL) {
         return;
     }
-    for (uint32_t index = 0U; index < geometry->ring_count; index++) {
-        solar_os_map_ring_t ring;
-        if (!solar_os_map_geometry_ring(geometry, index, &ring) ||
-            ring.point_count > map_app.scratch_max) {
+    solar_os_map_ring_cursor_t cursor = {0};
+    solar_os_map_ring_t ring;
+    while (solar_os_map_geometry_next(geometry, &cursor, &ring)) {
+        if (ring.point_count > map_app.scratch_max) {
             continue;
         }
         int left = 0;

@@ -42,8 +42,18 @@ extern const size_t solar_os_map_basemap_world_size;
 esp_err_t solar_os_map_geometry_parse(const uint8_t *data,
                                       size_t size,
                                       solar_os_map_geometry_t *geometry);
-bool solar_os_map_geometry_ring(const solar_os_map_geometry_t *geometry,
-                                uint32_t index,
+/*
+ * Rings are read in order through a cursor. Reaching one by index would
+ * cost the sum of the lengths before it, which is quadratic over a layer
+ * holding thousands of rings.
+ */
+typedef struct {
+    uint32_t index;
+    size_t offset;
+} solar_os_map_ring_cursor_t;
+
+bool solar_os_map_geometry_next(const solar_os_map_geometry_t *geometry,
+                                solar_os_map_ring_cursor_t *cursor,
                                 solar_os_map_ring_t *ring);
 /* Vertices in the largest ring, so a renderer can size one scratch buffer. */
 size_t solar_os_map_geometry_longest_ring(const solar_os_map_geometry_t *geometry);

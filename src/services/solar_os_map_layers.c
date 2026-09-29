@@ -63,25 +63,24 @@ esp_err_t solar_os_map_geometry_parse(const uint8_t *data,
     return ESP_OK;
 }
 
-bool solar_os_map_geometry_ring(const solar_os_map_geometry_t *geometry,
-                                uint32_t index,
+bool solar_os_map_geometry_next(const solar_os_map_geometry_t *geometry,
+                                solar_os_map_ring_cursor_t *cursor,
                                 solar_os_map_ring_t *ring)
 {
-    if (geometry == NULL || geometry->data == NULL || ring == NULL ||
-        index >= geometry->ring_count) {
+    if (geometry == NULL || geometry->data == NULL || cursor == NULL ||
+        ring == NULL || cursor->index >= geometry->ring_count) {
         return false;
     }
     const uint8_t *counts = &geometry->data[SOLAR_OS_MAP_LAYER_HEADER];
-    size_t offset = 0U;
-    for (uint32_t current = 0U; current < index; current++) {
-        offset += read_u32(&counts[current * 4U]) & ~SOLAR_OS_MAP_RING_OPEN;
-    }
-    const uint32_t stored = read_u32(&counts[index * 4U]);
+    const uint32_t stored = read_u32(&counts[cursor->index * 4U]);
+    const size_t count = stored & ~SOLAR_OS_MAP_RING_OPEN;
     const size_t start = SOLAR_OS_MAP_LAYER_HEADER +
-                         (size_t)geometry->ring_count * 4U + offset * 8U;
+                         (size_t)geometry->ring_count * 4U + cursor->offset * 8U;
     ring->coordinates = (const int32_t *)(const void *)&geometry->data[start];
-    ring->point_count = stored & ~SOLAR_OS_MAP_RING_OPEN;
+    ring->point_count = count;
     ring->open = (stored & SOLAR_OS_MAP_RING_OPEN) != 0U;
+    cursor->index++;
+    cursor->offset += count;
     return true;
 }
 
