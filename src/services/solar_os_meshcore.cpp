@@ -24,6 +24,9 @@ extern "C" {
 #include "solar_os_credentials.h"
 #include "solar_os_crypto.h"
 #include "solar_os_identity.h"
+#if SOLAR_OS_PACKAGE_SERVICE_MAP
+#include "solar_os_map.h"
+#endif
 #include "solar_os_memory.h"
 #include "solar_os_messaging.h"
 #include "solar_os_meshcore_channel_key.h"
@@ -669,7 +672,33 @@ protected:
             &endpoint_id);
         if (last_error_ == ESP_OK) {
             adverts_received_++;
+            publish_map_point(contact);
         }
+    }
+
+    void publish_map_point(const ContactInfo &contact)
+    {
+#if SOLAR_OS_PACKAGE_SERVICE_MAP
+        if (contact.gps_lat == 0 && contact.gps_lon == 0) {
+            return;
+        }
+        char key[SOLAR_OS_MAP_KEY_MAX];
+        for (size_t i = 0; i < 6U; i++) {
+            snprintf(&key[i * 2U], 3U, "%02x", contact.id.pub_key[i]);
+        }
+        solar_os_map_publish_t point = {};
+        point.source = "meshcore";
+        point.key = key;
+        point.label = contact.name;
+        point.kind = SOLAR_OS_MAP_KIND_NODE;
+        /* MeshCore adverts carry degrees scaled by 1e6. */
+        point.latitude_e7 = (int32_t)contact.gps_lat * 10;
+        point.longitude_e7 = (int32_t)contact.gps_lon * 10;
+        point.timestamp_ms = (uint64_t)contact.last_advert_timestamp * 1000ULL;
+        (void)solar_os_map_publish(&point, nullptr);
+#else
+        (void)contact;
+#endif
     }
 
     void onContactPathUpdated(const ContactInfo &contact) override

@@ -886,6 +886,42 @@ flash BOARD FLAVOR [version=VERSION] [port=uart0] [boot=PIN] [reset=PIN] [baud=R
 See [Flash another ESP board](flash.md) for wiring, target-selection, security,
 storage, and verification details.
 
+## map
+
+Map of geo-tagged points published by any part of the system. The service is a
+sink like the inbox: GNSS publishes your own position, MeshCore publishes chat
+adverts that carry a position, and the shell publishes waypoints. Points live
+in RAM only.
+
+Open the map:
+
+```text
+map
+```
+
+Arrows or `h` `j` `k` `l` pan a quarter screen, `+` and `-` zoom, `Tab`, `n`
+and `p` move the selection, `c` centres on the selected point (following it
+when it is your own position), `f` fits every point, `r` reads the GNSS
+position now, `d` deletes the selected point, and `q` or `Esc` leaves.
+
+Your own position is drawn `@`, nodes `o`, and waypoints `+`. The info row
+under the map shows the selected point's coordinates, and its distance and
+bearing from your own position when one is known.
+
+Use the shell surface for mutations:
+
+```text
+map status
+map list
+map add LABEL LATITUDE LONGITUDE
+map remove ID
+map clear [SOURCE]
+map fix
+```
+
+Coordinates are decimal degrees, signed or with an `N`/`S`/`E`/`W` suffix. See
+[Map](map.md) for the projection and the point-source table.
+
 ## contacts
 
 Provider-neutral address book for gateway and MeshCore identities. Contacts can

@@ -59,6 +59,7 @@ slip = true
 ppp = true
 osc = true
 inbox = true
+map = true
 contacts = true
 chat = true
 chat_gateway = true

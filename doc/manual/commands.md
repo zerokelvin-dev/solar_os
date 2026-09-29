@@ -115,6 +115,13 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `inbox` | `inbox clear` | Remove every message. |
 | `inbox` | `inbox post <source> <message>` | Post a message from a shell script or for testing. |
 | `inbox` | `inbox notify [on\|off\|test]` | Show, persist, disable, or test the Inbox notification sound. It defaults to on and is unavailable on boards without audio output. |
+| `map` | `map` | Open the map of geo-tagged points. |
+| `map` | `map status` | Show the plotted point count and capacity. |
+| `map` | `map list` | List every plotted point, newest first. |
+| `map` | `map add <label> <latitude> <longitude>` | Store a waypoint at decimal-degree coordinates. |
+| `map` | `map remove <id>` | Remove one point by its decimal ID. |
+| `map` | `map clear [source]` | Remove every point, or every point from one source. |
+| `map` | `map fix` | Publish the current GNSS position as your own point. |
 | `contacts` | `contacts` | Open the searchable provider-neutral contact browser. |
 | `contacts` | `contacts status` | Show contact, endpoint, persistence, PSRAM, and opaque-credential counts. |
 | `contacts` | `contacts list [all\|discovered\|trusted\|blocked]` | List contacts, optionally filtered by endpoint trust. |
