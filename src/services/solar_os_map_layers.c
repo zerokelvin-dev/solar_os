@@ -48,7 +48,7 @@ esp_err_t solar_os_map_geometry_parse(const uint8_t *data,
     for (uint32_t index = 0U; index < rings; index++) {
         const uint32_t count =
             read_u32(&data[SOLAR_OS_MAP_LAYER_HEADER + index * 4U]) &
-            ~SOLAR_OS_MAP_RING_OPEN;
+            SOLAR_OS_MAP_RING_COUNT_MASK;
         if (count < 2U) {
             return ESP_ERR_INVALID_SIZE;
         }
@@ -74,7 +74,7 @@ bool solar_os_map_geometry_next(const solar_os_map_geometry_t *geometry,
     }
     const uint8_t *counts = &geometry->data[SOLAR_OS_MAP_LAYER_HEADER];
     const uint32_t stored = read_u32(&counts[cursor->index * 4U]);
-    const size_t count = stored & ~SOLAR_OS_MAP_RING_OPEN;
+    const size_t count = stored & SOLAR_OS_MAP_RING_COUNT_MASK;
     const size_t bounds_at = SOLAR_OS_MAP_LAYER_HEADER +
                              (size_t)geometry->ring_count * 4U +
                              (size_t)cursor->index * 16U;
@@ -83,6 +83,11 @@ bool solar_os_map_geometry_next(const solar_os_map_geometry_t *geometry,
     ring->coordinates = (const int32_t *)(const void *)&geometry->data[start];
     ring->point_count = count;
     ring->open = (stored & SOLAR_OS_MAP_RING_OPEN) != 0U;
+    const uint32_t klass = (stored & SOLAR_OS_MAP_RING_CLASS_MASK) >>
+                           SOLAR_OS_MAP_RING_CLASS_SHIFT;
+    ring->klass = klass < SOLAR_OS_MAP_CLASS_COUNT
+                      ? (solar_os_map_class_t)klass
+                      : SOLAR_OS_MAP_CLASS_LAND;
     ring->lat_min = (int32_t)read_u32(&geometry->data[bounds_at]);
     ring->lat_max = (int32_t)read_u32(&geometry->data[bounds_at + 4U]);
     ring->lon_min = (int32_t)read_u32(&geometry->data[bounds_at + 8U]);
@@ -101,7 +106,7 @@ size_t solar_os_map_geometry_longest_ring(const solar_os_map_geometry_t *geometr
     size_t longest = 0U;
     for (uint32_t index = 0U; index < geometry->ring_count; index++) {
         const size_t count =
-            read_u32(&counts[index * 4U]) & ~SOLAR_OS_MAP_RING_OPEN;
+            read_u32(&counts[index * 4U]) & SOLAR_OS_MAP_RING_COUNT_MASK;
         if (count > longest) {
             longest = count;
         }
@@ -153,6 +158,24 @@ size_t solar_os_map_layer_longest_ring(void)
         }
     }
     return longest;
+}
+
+const char *solar_os_map_class_name(solar_os_map_class_t klass)
+{
+    switch (klass) {
+    case SOLAR_OS_MAP_CLASS_WATER:
+        return "water";
+    case SOLAR_OS_MAP_CLASS_ROAD:
+        return "road";
+    case SOLAR_OS_MAP_CLASS_RAIL:
+        return "rail";
+    case SOLAR_OS_MAP_CLASS_BUILDING:
+        return "building";
+    case SOLAR_OS_MAP_CLASS_BOUNDARY:
+        return "boundary";
+    default:
+        return "land";
+    }
 }
 
 static void layer_name_from_path(const char *path, char *name, size_t name_len)

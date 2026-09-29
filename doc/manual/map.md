@@ -81,6 +81,16 @@ Features are `coastline`, `water`, `rivers`, `major-roads`, `roads`,
 together than a given distance; there is no point keeping detail finer than
 a pixel at the zoom the layer is for.
 
+Each feature tags its rings with a class, and a display with colour draws
+each class in its own: land green, water blue, roads brown, rail grey,
+buildings tan, boundaries purple. A display without colour draws them all
+the same, as it did before classes existed.
+
+The script asks only for ways, so water that OpenStreetMap holds as a
+relation, which is most large lakes, does not arrive. Rivers and smaller
+water bodies are ways and do. A GeoJSON file loaded directly carries no
+class and is drawn as land; pack it with the script to colour it.
+
 The map drops what it cannot show before drawing it: a ring whose bounds
 fall outside the view is skipped without projecting a vertex, an area
 smaller than a couple of pixels is skipped, and within a ring vertices

@@ -13,7 +13,8 @@
  * it in the order they were added.
  *
  * A ring's stored count carries SOLAR_OS_MAP_RING_OPEN when the ring is a
- * line rather than an area, so roads and tracks draw unfilled.
+ * line rather than an area, so roads and tracks draw unfilled, and its
+ * class in the bits below that.
  *
  * Layout: header, then a count per ring, then bounds per ring as four
  * coordinates, then the coordinates themselves.
@@ -24,6 +25,24 @@
 #define SOLAR_OS_MAP_LAYER_MAX 4U
 #define SOLAR_OS_MAP_LAYER_NAME_MAX 32U
 #define SOLAR_OS_MAP_RING_OPEN 0x80000000UL
+#define SOLAR_OS_MAP_RING_CLASS_SHIFT 24U
+#define SOLAR_OS_MAP_RING_CLASS_MASK 0x7F000000UL
+#define SOLAR_OS_MAP_RING_COUNT_MASK 0x00FFFFFFUL
+
+/*
+ * What a ring represents, so a renderer can tell water from land. A display
+ * with colour uses it for colour; one without keeps drawing every class the
+ * same, which is what the map looked like before classes existed.
+ */
+typedef enum {
+    SOLAR_OS_MAP_CLASS_LAND = 0,
+    SOLAR_OS_MAP_CLASS_WATER = 1,
+    SOLAR_OS_MAP_CLASS_ROAD = 2,
+    SOLAR_OS_MAP_CLASS_RAIL = 3,
+    SOLAR_OS_MAP_CLASS_BUILDING = 4,
+    SOLAR_OS_MAP_CLASS_BOUNDARY = 5,
+    SOLAR_OS_MAP_CLASS_COUNT,
+} solar_os_map_class_t;
 
 typedef struct {
     const uint8_t *data;
@@ -36,6 +55,7 @@ typedef struct {
     const int32_t *coordinates; /* latitude, longitude pairs */
     size_t point_count;
     bool open;
+    solar_os_map_class_t klass;
     /* Bounds carried in the file so a ring off screen costs one compare
      * rather than a projection of every vertex it holds. */
     int32_t lat_min;
@@ -71,6 +91,7 @@ size_t solar_os_map_geometry_longest_ring(const solar_os_map_geometry_t *geometr
 size_t solar_os_map_layer_count(void);
 const solar_os_map_geometry_t *solar_os_map_layer(size_t index);
 const char *solar_os_map_layer_name(size_t index);
+const char *solar_os_map_class_name(solar_os_map_class_t klass);
 /* Largest ring across every layer. */
 size_t solar_os_map_layer_longest_ring(void);
 

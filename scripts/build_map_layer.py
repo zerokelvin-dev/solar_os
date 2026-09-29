@@ -35,31 +35,45 @@ MAGIC = b"SOMB"
 VERSION = 2
 E7 = 10000000.0
 RING_OPEN = 0x80000000
+CLASS_SHIFT = 24
 
-# Each feature is a list of Overpass filters over ways.
+CLASSES = {"land": 0, "water": 1, "road": 2, "rail": 3, "building": 4,
+           "boundary": 5}
+
+# Each feature is a list of Overpass filters over ways, and the class the
+# rings it returns are tagged with.
 FEATURES = {
-    "coastline": ['way["natural"="coastline"]'],
-    "water": ['way["natural"="water"]', 'way["waterway"="riverbank"]'],
-    "rivers": ['way["waterway"="river"]'],
-    "major-roads": ['way["highway"~"^(motorway|trunk|primary)$"]'],
-    "roads": ['way["highway"~"^(motorway|trunk|primary|secondary|tertiary)$"]'],
-    "rail": ['way["railway"="rail"]'],
-    "buildings": ['way["building"]'],
-    "boundary": ['way["boundary"="administrative"]["admin_level"~"^(2|4)$"]'],
+    "coastline": (["natural=coastline"], "land"),
+    "water": (["natural=water", "waterway=riverbank"], "water"),
+    "rivers": (["waterway=river"], "water"),
+    "major-roads": (["highway~^(motorway|trunk|primary)$"], "road"),
+    "roads": (["highway~^(motorway|trunk|primary|secondary|tertiary)$"], "road"),
+    "rail": (["railway=rail"], "rail"),
+    "buildings": (["building"], "building"),
+    "boundary": (["boundary=administrative", "admin_level~^(2|4)$"], "boundary"),
 }
 
 
+def overpass_filter(spec: str) -> str:
+    """A tag spec such as natural=water becomes ["natural"="water"]."""
+    if "~" in spec:
+        key, value = spec.split("~", 1)
+        return f'["{key}"~"{value}"]'
+    if "=" in spec:
+        key, value = spec.split("=", 1)
+        return f'["{key}"="{value}"]'
+    return f'["{spec}"]'
+
+
+
 def build_query(bbox: str, features: list[str], timeout: int) -> str:
+    """One query per feature, so each answer's class is known."""
     south, west, north, east = [part.strip() for part in bbox.split(",")]
     box = f"({south},{west},{north},{east})"
-    clauses = []
-    for feature in features:
-        if feature not in FEATURES:
-            raise SystemExit(f"unknown feature {feature!r}; "
-                             f"choose from {', '.join(sorted(FEATURES))}")
-        clauses += [f"  {filter_}{box};" for filter_ in FEATURES[feature]]
-    body = "\n".join(clauses)
-    return f"[out:json][timeout:{timeout}];\n(\n{body}\n);\nout geom;\n"
+    specs, _ = FEATURES[features]
+    clauses = "".join(overpass_filter(spec) for spec in specs)
+    return (f"[out:json][timeout:{timeout}];\n"
+            f"way{clauses}{box};\nout geom;\n")
 
 
 def fetch(query: str, retries: int = 3) -> dict:
@@ -82,7 +96,8 @@ def fetch(query: str, retries: int = 3) -> dict:
     raise SystemExit("overpass did not answer")
 
 
-def rings(payload: dict, tolerance: int) -> list[tuple[list[tuple[int, int]], bool]]:
+def rings(payload: dict, tolerance: int,
+          klass: int) -> list[tuple[list[tuple[int, int]], bool, int]]:
     out = []
     for element in payload.get("elements", []):
         geometry = element.get("geometry")
@@ -95,7 +110,7 @@ def rings(payload: dict, tolerance: int) -> list[tuple[list[tuple[int, int]], bo
             ring.pop()
         ring = simplify(ring, tolerance)
         if len(ring) >= 2:
-            out.append((ring, not closed))
+            out.append((ring, not closed, klass))
     return out
 
 
@@ -113,18 +128,21 @@ def simplify(ring: list[tuple[int, int]], tolerance: int) -> list[tuple[int, int
     return kept
 
 
-def pack(entries: list[tuple[list[tuple[int, int]], bool]]) -> bytes:
-    points = sum(len(ring) for ring, _ in entries)
+def pack(entries: list[tuple[list[tuple[int, int]], bool, int]]) -> bytes:
+    points = sum(len(ring) for ring, _, _ in entries)
     out = bytearray()
     out += MAGIC
     out += struct.pack("<HHII", VERSION, 0, len(entries), points)
-    for ring, is_open in entries:
-        out += struct.pack("<I", len(ring) | (RING_OPEN if is_open else 0))
-    for ring, _ in entries:
+    for ring, is_open, klass in entries:
+        if len(ring) > 0xFFFFFF:
+            raise SystemExit("a ring longer than 16 million points")
+        word = len(ring) | (klass << CLASS_SHIFT)
+        out += struct.pack("<I", word | (RING_OPEN if is_open else 0))
+    for ring, _, _ in entries:
         lats = [lat for lat, _ in ring]
         lons = [lon for _, lon in ring]
         out += struct.pack("<iiii", min(lats), max(lats), min(lons), max(lons))
-    for ring, _ in entries:
+    for ring, _, _ in entries:
         for lat, lon in ring:
             out += struct.pack("<ii", lat, lon)
     return bytes(out)
@@ -146,19 +164,27 @@ def main() -> int:
     args = parser.parse_args()
 
     features = [name.strip() for name in args.features.split(",") if name.strip()]
-    query = build_query(args.bbox, features, args.timeout)
+    for feature in features:
+        if feature not in FEATURES:
+            raise SystemExit(f"unknown feature {feature!r}; "
+                             f"choose from {', '.join(sorted(FEATURES))}")
     if args.query_only:
-        print(query)
+        for feature in features:
+            print(build_query(args.bbox, feature, args.timeout))
         return 0
 
-    print(f"querying overpass for {args.bbox}", file=sys.stderr)
-    entries = rings(fetch(query), args.tolerance)
+    entries = []
+    for feature in features:
+        print(f"querying overpass for {feature} in {args.bbox}", file=sys.stderr)
+        klass = CLASSES[FEATURES[feature][1]]
+        entries += rings(fetch(build_query(args.bbox, feature, args.timeout)),
+                         args.tolerance, klass)
     if not entries:
         raise SystemExit("no geometry in that box for those features")
     data = pack(entries)
     args.output.write_bytes(data)
-    points = sum(len(ring) for ring, _ in entries)
-    longest = max(len(ring) for ring, _ in entries)
+    points = sum(len(ring) for ring, _, _ in entries)
+    longest = max(len(ring) for ring, _, _ in entries)
     print(f"{len(entries)} rings, {points} points, longest {longest}, "
           f"{len(data)} bytes", file=sys.stderr)
     return 0
