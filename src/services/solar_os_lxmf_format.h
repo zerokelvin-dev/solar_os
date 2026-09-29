@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * An LXMF message is the sender's destination hash, a signature, and a
  * msgpack payload of timestamp, title, content, and a fields map. The
@@ -62,3 +66,7 @@ bool solar_os_lxmf_parse_announce(const uint8_t *data,
                                   size_t len,
                                   char *name,
                                   size_t name_len);
+
+#ifdef __cplusplus
+}
+#endif

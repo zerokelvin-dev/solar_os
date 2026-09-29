@@ -8,6 +8,7 @@
 #include <exception>
 #include <memory>
 
+#include "solar_os_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
@@ -22,6 +23,7 @@ extern "C" {
 }
 #include "solar_os_reticulum_tcp.h"
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
+#include "solar_os_lxmf.h"
 #include "solar_os_lxmf_internal.h"
 #endif
 
@@ -52,6 +54,7 @@ bool initialized = false;
 bool running = false;
 bool instance_created = false;
 bool identity_set = false;
+bool interface_was_online = false;
 solar_os_reticulum_status_t counters = {};
 char host[SOLAR_OS_RETICULUM_HOST_MAX + 1U] = {};
 uint16_t port = 0;
@@ -391,6 +394,7 @@ esp_err_t solar_os_reticulum_start(const char *server, uint16_t server_port)
         tcp_interface.start();
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
         (void)solar_os::lxmf::attach(identity);
+        interface_was_online = false;
 #endif
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "start failed: %s", failure.what());
@@ -446,6 +450,12 @@ void solar_os_reticulum_loop_once(void)
     try {
         reticulum.loop();
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
+        /* An announce before the interface is up has nowhere to go. */
+        const bool online = tcp_interface && tcp_interface.online();
+        if (online && !interface_was_online) {
+            (void)solar_os_lxmf_announce();
+        }
+        interface_was_online = online;
         solar_os::lxmf::tick();
 #endif
     } catch (const std::exception &failure) {

@@ -31,6 +31,11 @@ microStore adapter except the POSIX one. See `EXCLUDED` in the script.
 - `0003-transport-stores-always.patch`: upstream opens the path, known-destination and
   hash-list stores only when transport is enabled, so a leaf node could not remember
   any announce. The stores now open for every node.
+- `0004-hmac-finish-live-context.patch`: `HMAC::digest` finished a clone of its
+  context, but `mbedtls_md_clone` copies only the message-digest state and not the
+  HMAC key schedule, so every MAC was self-consistent garbage. Announces still
+  verified because Ed25519 avoids this path, while every encrypted packet from a
+  reference Reticulum peer failed its token HMAC.
 - `overlay/microReticulum/Utilities/Memory.{h,cpp}`: no TLSF pools; containers use
   `operator new`; heap statistics come from `heap_caps_*`.
 - `overlay/microReticulum.h`: umbrella header without Provisioning.

@@ -229,9 +229,14 @@ void receive(const RNS::Bytes &data, const RNS::Packet &)
         .truncated = payload.truncated,
     };
     bool inserted = false;
-    if (solar_os_messaging_publish_inbound(&message, &inserted, nullptr) ==
-            ESP_OK &&
-        inserted) {
+    const esp_err_t error =
+        solar_os_messaging_publish_inbound(&message, &inserted, nullptr);
+    if (error != ESP_OK) {
+        counters.last_error = error;
+        SOLAR_OS_LOGW(TAG, "message not stored: %s", esp_err_to_name(error));
+        return;
+    }
+    if (inserted) {
         counters.received++;
     }
 }
@@ -384,7 +389,6 @@ esp_err_t attach(const RNS::Identity &identity)
         SOLAR_OS_MESSAGING_PROVIDER_RETICULUM, "Reticulum");
     (void)solar_os_messaging_provider_set_status(
         SOLAR_OS_MESSAGING_PROVIDER_RETICULUM, true, true, ESP_OK, nullptr);
-    announce_requested = true;
     return ESP_OK;
 }
 

@@ -152,7 +152,7 @@ static void contacts_changed_locked(void)
 static bool contacts_provider_valid(solar_os_messaging_provider_id_t provider)
 {
     return provider >= SOLAR_OS_MESSAGING_PROVIDER_GATEWAY &&
-        provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK;
+        provider <= SOLAR_OS_MESSAGING_PROVIDER_RETICULUM;
 }
 
 static bool contacts_trust_valid(solar_os_contact_trust_t trust)
