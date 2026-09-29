@@ -35,7 +35,13 @@ capabilities = [
 required_packages = []
 psram_bytes = 8388608
 
+[header]
+includes = ["solar_os_keys.h"]
+
 [defines]
+# Fixed key actions, run from an empty shell prompt. Home emits APP_EXIT,
+# and Messages/Maps/Pin emit F1/F2/F3.
+SOLAR_OS_BOARD_SHELL_KEY_ACTIONS = '''{{SOLAR_OS_KEY_APP_EXIT, "launcher"}, {SOLAR_OS_KEY_F1, "chat"}, {SOLAR_OS_KEY_F2, "map"}, {SOLAR_OS_KEY_F3, "contacts"}}'''
 SOLAR_OS_BOARD_DISPLAY_CONTROLLER = '"ST7789"'
 SOLAR_OS_BOARD_DISPLAY_CONTROLLER_ST7789 = "1"
 SOLAR_OS_BOARD_DISPLAY_DRIVER_NAME = '"st7789"'
