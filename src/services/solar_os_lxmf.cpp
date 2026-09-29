@@ -278,11 +278,17 @@ void fail(uint32_t request_id, const char *reason)
     conclude(request_id, SOLAR_OS_DELIVERY_FAILED, reason);
 }
 
+/*
+ * Returns false when this attempt could not be made. That is not a failure:
+ * the peer's identity arrives with its announce and its path arrives with a
+ * path request, so an attempt that finds neither is simply early. Only the
+ * attempt count ends a message.
+ */
 bool transmit()
 {
     RNS::Identity peer = RNS::Identity::recall(pending.destination);
     if (!peer) {
-        fail(pending.request_id, "Reticulum peer identity unknown");
+        RNS::Transport::request_path(pending.destination);
         return false;
     }
     char name[SOLAR_OS_LXMF_NAME_MAX + 1U];
@@ -295,6 +301,7 @@ bool transmit()
         sizeof(payload));
     if (payload_len == 0U ||
         payload_len + kOverhead > SOLAR_OS_LXMF_PACKET_MAX) {
+        /* Permanent: no number of attempts shortens a message. */
         fail(pending.request_id, "Reticulum message exceeds one packet");
         return false;
     }
@@ -319,7 +326,7 @@ bool transmit()
     RNS::Packet packet(out, wire);
     RNS::PacketReceipt receipt = packet.receipt_send();
     if (!receipt) {
-        fail(request_id, "Reticulum packet could not be sent");
+        /* No interface would take it; there may be one by the next try. */
         return false;
     }
     counters.sent++;
