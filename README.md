@@ -38,6 +38,7 @@ pio run -e qdtech_es3n28p
 pio run -e cl_32
 pio run -e t_lora_pager
 pio run -e t_deck_plus
+pio run -e thinknode_m9
 pio run -e waveshare_esp32_s3_sim7670g_4g
 pio run -e elecrow_crowpanel_esp32_s3_4_2_epaper
 pio run -e elecrow_crowpanel_esp32_s3_5_79_epaper
