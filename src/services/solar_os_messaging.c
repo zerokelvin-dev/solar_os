@@ -308,6 +308,58 @@ static messaging_message_slot_t *messaging_find_message_locked(
     return NULL;
 }
 
+/*
+ * The outbox is a work queue, not a store: the message itself, its body and
+ * its delivery state are already held durably. Anything still queued or
+ * part-way through sending when the lights went out is put back on the
+ * queue here, so a message written while its provider was down goes out
+ * when the provider returns rather than waiting to be typed again.
+ *
+ * Sending counts as queued: the provider that claimed it no longer exists,
+ * so nobody is going to finish it.
+ */
+static void messaging_requeue_pending_locked(void)
+{
+    const size_t oldest = messaging_message_oldest_locked();
+    for (size_t i = 0; i < messaging.message_count; i++) {
+        messaging_message_slot_t *slot =
+            &messaging.messages[(oldest + i) %
+                                SOLAR_OS_MESSAGING_MESSAGE_CAPACITY];
+        if (slot->message.key == 0 ||
+            slot->message.direction != SOLAR_OS_MESSAGE_OUTBOUND ||
+            (slot->message.delivery != SOLAR_OS_DELIVERY_QUEUED &&
+             slot->message.delivery != SOLAR_OS_DELIVERY_SENDING)) {
+            continue;
+        }
+        if (messaging.outbox_count >= SOLAR_OS_MESSAGING_OUTBOX_CAPACITY) {
+            messaging.dropped_outbox++;
+            continue;
+        }
+        const int index =
+            messaging_conversation_id_index_locked(slot->message.conversation_id);
+        if (index < 0) {
+            continue;
+        }
+        const solar_os_messaging_conversation_t *conversation =
+            &messaging.conversations[index];
+        solar_os_messaging_outbound_t *outbound =
+            &messaging.outbox[messaging.outbox_head];
+        memset(outbound, 0, sizeof(*outbound));
+        outbound->id = messaging_next_u32(&messaging.next_outbox_id);
+        outbound->message_key = slot->message.key;
+        outbound->conversation_id = slot->message.conversation_id;
+        outbound->provider = slot->message.provider;
+        strlcpy(outbound->provider_key,
+                conversation->provider_key,
+                sizeof(outbound->provider_key));
+        strlcpy(outbound->body, slot->message.body, sizeof(outbound->body));
+        messaging.outbox_head =
+            (messaging.outbox_head + 1U) % SOLAR_OS_MESSAGING_OUTBOX_CAPACITY;
+        messaging.outbox_count++;
+        slot->message.delivery = SOLAR_OS_DELIVERY_QUEUED;
+    }
+}
+
 static void messaging_publish_event_locked(
     solar_os_messaging_event_type_t type,
     solar_os_messaging_provider_id_t provider,
@@ -1178,6 +1230,9 @@ esp_err_t solar_os_messaging_init(void)
     solar_os_inbox_set_clear_observer(messaging_unlink_all_inbox_projections,
                                       NULL);
     messaging_reconcile_inbox_projections();
+    messaging_lock();
+    messaging_requeue_pending_locked();
+    messaging_unlock();
     return ESP_OK;
 }
 
@@ -1740,6 +1795,20 @@ esp_err_t solar_os_messaging_send(solar_os_conversation_id_t conversation_id,
     slot->message.delivery = SOLAR_OS_DELIVERY_QUEUED;
     slot->message.security_flags = conversation->security_flags;
     strlcpy(slot->message.body, body, sizeof(slot->message.body));
+    /*
+     * A message queued to a provider that is not running looks exactly
+     * like one queued to a provider that is merely slow, and the reason it
+     * is not moving is the one thing worth saying. The provider clears
+     * this when it picks the message up.
+     */
+    const solar_os_messaging_provider_status_t *provider_status =
+        &messaging.providers[messaging_provider_index(conversation->provider)];
+    if (!provider_status->running) {
+        snprintf(slot->message.error,
+                 sizeof(slot->message.error),
+                 "%s is not running",
+                 solar_os_messaging_provider_name(conversation->provider));
+    }
     messaging.message_head =
         (messaging.message_head + 1U) % SOLAR_OS_MESSAGING_MESSAGE_CAPACITY;
     if (messaging.message_count < SOLAR_OS_MESSAGING_MESSAGE_CAPACITY) {

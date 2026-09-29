@@ -20,18 +20,33 @@ extern "C" {
 namespace {
 
 constexpr const char *TAG = "lxmf";
-/* A peer has this long to answer a path request before the send fails. */
-constexpr int64_t kPathTimeoutUs = 20LL * 1000000LL;
+/*
+ * Delivery follows the same shape as the LXMF router's outbound job, so
+ * that what a peer observes, and what someone reading this after reading
+ * LXMF expects, are the same thing. The retries are driven by whether
+ * Reticulum has a path rather than by a clock alone: after a try without
+ * one, ask for a path and wait; if a path exists and delivery still fails,
+ * treat the path as stale, drop it and ask again.
+ *
+ * LXMF ships five attempts. Three is enough on a link this slow, and the
+ * difference between giving up after two minutes and after four is not
+ * worth the airtime.
+ */
+constexpr uint8_t kMaxDeliveryAttempts = 3;
+constexpr uint8_t kMaxPathlessTries = 1;
+constexpr int64_t kProcessingIntervalUs = 4LL * 1000000LL;
+constexpr int64_t kDeliveryRetryWaitUs = 10LL * 1000000LL;
+constexpr int64_t kPathRequestWaitUs = 7LL * 1000000LL;
 constexpr int16_t kProofTimeoutSeconds = 30;
 constexpr size_t kOverhead =
     SOLAR_OS_LXMF_HASH_LEN + SOLAR_OS_LXMF_SIGNATURE_LEN;
 
 struct Pending {
     bool active;
-    bool awaiting_path;
     bool concluded;
     uint32_t request_id;
-    int64_t started_us;
+    uint8_t attempts;
+    int64_t next_attempt_us;
     RNS::Bytes destination;
     char body[SOLAR_OS_LXMF_CONTENT_MAX + 1U];
 };
@@ -51,6 +66,7 @@ SemaphoreHandle_t lock = nullptr;
 StaticSemaphore_t lock_storage;
 bool attached = false;
 bool announce_requested = false;
+int64_t last_process_us = 0;
 solar_os_lxmf_status_t counters = {};
 Pending pending = {};
 
@@ -307,17 +323,52 @@ bool transmit()
         return false;
     }
     counters.sent++;
-    (void)solar_os_messaging_outbox_update(
-        request_id, SOLAR_OS_DELIVERY_SENT, nullptr);
     receipt.set_timeout(kProofTimeoutSeconds);
     receipt.set_delivery_handler([request_id](const RNS::PacketReceipt &) {
         conclude(request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
     });
-    receipt.set_timeout_handler([request_id](const RNS::PacketReceipt &) {
-        /* The message went out; only the delivery proof never came back. */
-        conclude(request_id, SOLAR_OS_DELIVERY_SENT, nullptr);
-    });
+    /*
+     * No timeout handler: an opportunistic packet that draws no proof is
+     * not finished, it is unanswered, and the next attempt is the answer.
+     * Claiming it was sent would put a message the peer never saw next to
+     * one it did.
+     */
     return true;
+}
+
+/*
+ * One step of the outbound job. Mirrors the opportunistic branch of the
+ * LXMF router: try, then ask for a path, then distrust the path you have,
+ * then give up.
+ */
+void process_outbound()
+{
+    const int64_t now = esp_timer_get_time();
+    if (pending.attempts > kMaxDeliveryAttempts) {
+        fail(pending.request_id, "no answer from the Reticulum peer");
+        return;
+    }
+    const bool has_path = RNS::Transport::has_path(pending.destination);
+    if (pending.attempts >= kMaxPathlessTries && !has_path) {
+        pending.attempts++;
+        RNS::Transport::request_path(pending.destination);
+        pending.next_attempt_us = now + kPathRequestWaitUs;
+        return;
+    }
+    if (pending.attempts == kMaxPathlessTries + 1U && has_path) {
+        /* Delivery keeps failing with a path in hand, so the path is the
+         * thing to doubt. */
+        pending.attempts++;
+        (void)RNS::Transport::expire_path(pending.destination);
+        RNS::Transport::request_path(pending.destination);
+        pending.next_attempt_us = now + kPathRequestWaitUs;
+        return;
+    }
+    if (now > pending.next_attempt_us) {
+        pending.attempts++;
+        pending.next_attempt_us = now + kDeliveryRetryWaitUs;
+        (void)transmit();
+    }
 }
 
 void start_next()
@@ -330,7 +381,6 @@ void start_next()
     memset(&pending, 0, sizeof(pending));
     pending.active = true;
     pending.request_id = outbound.id;
-    pending.started_us = esp_timer_get_time();
     strlcpy(pending.body, outbound.body, sizeof(pending.body));
 
     solar_os_messaging_conversation_t conversation = {};
@@ -347,13 +397,7 @@ void start_next()
     }
     (void)solar_os_messaging_outbox_update(
         outbound.id, SOLAR_OS_DELIVERY_SENDING, nullptr);
-
-    if (!RNS::Transport::has_path(pending.destination)) {
-        RNS::Transport::request_path(pending.destination);
-        pending.awaiting_path = true;
-        return;
-    }
-    (void)transmit();
+    process_outbound();
 }
 
 }  // namespace
@@ -399,7 +443,11 @@ void detach()
     }
     attached = false;
     if (pending.active) {
-        fail(pending.request_id, "Reticulum stopped");
+        /* Stopping is not a delivery failure. The message goes back on the
+         * queue so it is tried again when Reticulum returns. */
+        (void)solar_os_messaging_outbox_update(
+            pending.request_id, SOLAR_OS_DELIVERY_QUEUED, nullptr);
+        memset(&pending, 0, sizeof(pending));
     }
     try {
         RNS::Transport::deregister_announce_handler(announce_handler);
@@ -435,17 +483,17 @@ void tick()
                 counters.announces_sent++;
             }
         }
-        if (pending.active && pending.awaiting_path) {
-            if (RNS::Transport::has_path(pending.destination)) {
-                pending.awaiting_path = false;
-                (void)transmit();
-            } else if (esp_timer_get_time() - pending.started_us >
-                       kPathTimeoutUs) {
-                fail(pending.request_id, "no Reticulum path to the peer");
+        /* The outbound job runs on its own interval, as the LXMF router's
+         * does, rather than on every pass of the Reticulum loop. */
+        const int64_t now = esp_timer_get_time();
+        if (now - last_process_us >= kProcessingIntervalUs) {
+            last_process_us = now;
+            if (pending.active) {
+                process_outbound();
             }
-        }
-        if (!pending.active) {
-            start_next();
+            if (!pending.active) {
+                start_next();
+            }
         }
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "tick failed: %s", failure.what());

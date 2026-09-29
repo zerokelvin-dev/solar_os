@@ -76,10 +76,24 @@ The display name SolarOS announces is the device hostname.
 
 Delivery is opportunistic: each message is one encrypted packet, signed with
 the node identity, addressed directly to the peer. That caps a message at 255
-bytes and means the peer must be reachable when it is sent. A message shows
-as delivered once the peer's proof comes back, and as sent if the proof never
-arrives. There is no store-and-forward through a propagation node, and no
-links, resources, attachments, or stamps.
+bytes. A message shows as delivered once the peer's proof comes back.
+
+Delivery follows the same shape as the LXMF router's outbound job, so a peer
+sees the behaviour it would see from any other LXMF sender. Attempts are
+driven by whether Reticulum has a path rather than by a clock alone: a try
+without a path is followed by a path request, and a try that fails with a
+path in hand treats that path as stale, drops it and asks again. Three
+attempts, ten seconds apart, and then the message is marked failed. LXMF
+itself allows five; three is enough on a link this slow.
+
+A message queued while the job is stopped stays queued, and is sent when the
+job starts. The outbox is rebuilt at boot from the stored messages, so
+queued mail survives a restart, and a message whose provider is not running
+says so rather than sitting at queued with no explanation.
+
+There is no store-and-forward through a propagation node, and no links,
+resources, attachments, or stamps. A message to a peer that never becomes
+reachable fails rather than waiting for it.
 
 Inbound messages are dropped unless their signature verifies against an
 identity SolarOS already knows, so a message from a peer that has never
