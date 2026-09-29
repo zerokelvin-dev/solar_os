@@ -51,7 +51,7 @@ map unload all
 
 Two formats are read. A GeoJSON file is parsed by a character scanner rather
 than into a document, so a large file costs only its geometry in memory;
-polygons are filled and lines are drawn open. A packed layer produced by
+polygons and lines are both drawn as outlines. A packed layer produced by
 `scripts/build_map_basemap.py` costs no parsing at all and is worth
 preparing for geometry that is loaded often.
 
@@ -82,7 +82,7 @@ instead.
 
 | Key | Action |
 | --- | --- |
-| Arrows, `h` `j` `k` `l` | Pan a quarter of a screen |
+| Arrows, `h` `j` `k` `l` | Pan an eighth of a screen |
 | `+` `-` | Zoom in and out |
 | `Tab`, `n`, `p` | Select the next or previous point |
 | `c` | Centre on the selected point, and follow it if it is your position |
@@ -91,8 +91,9 @@ instead.
 | `d` | Delete the selected point |
 | `q`, `Esc` | Leave the app |
 
-Your own position is a filled circle inside a ring, a node is an open
-circle, and a waypoint is a cross. The selected point is boxed and labelled,
+Coastlines are drawn as outlines rather than filled areas. Your own
+position is a filled circle inside a ring, a node is an open circle, and a
+waypoint is a cross. The selected point is boxed and labelled,
 and the row under the map gives its coordinates, and the distance and
 bearing from your own position when one is known.
 
