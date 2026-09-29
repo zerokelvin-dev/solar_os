@@ -105,19 +105,24 @@ static solar_os_gfx_color_t map_app_class_color(const solar_os_gfx_t *gfx,
     if (!map_app_colour(gfx)) {
         return SOLAR_OS_GFX_COLOR_BLACK;
     }
+    /*
+     * Water takes the blue the paint app uses, so the two agree. The rest
+     * sit on the levels the indexed palette is built from, which are
+     * multiples of 51, so none of them shift when they are quantised.
+     */
     switch (klass) {
     case SOLAR_OS_MAP_CLASS_WATER:
-        return solar_os_gfx_rgb(60, 110, 190);
+        return solar_os_gfx_rgb(0x1e, 0x63, 0xd5);
     case SOLAR_OS_MAP_CLASS_ROAD:
-        return solar_os_gfx_rgb(170, 90, 40);
+        return solar_os_gfx_rgb(153, 102, 51);
     case SOLAR_OS_MAP_CLASS_RAIL:
-        return solar_os_gfx_rgb(120, 120, 120);
+        return solar_os_gfx_rgb(102, 102, 102);
     case SOLAR_OS_MAP_CLASS_BUILDING:
-        return solar_os_gfx_rgb(150, 130, 110);
+        return solar_os_gfx_rgb(204, 153, 102);
     case SOLAR_OS_MAP_CLASS_BOUNDARY:
-        return solar_os_gfx_rgb(160, 80, 160);
+        return solar_os_gfx_rgb(153, 51, 153);
     default:
-        return solar_os_gfx_rgb(40, 110, 60);
+        return solar_os_gfx_rgb(51, 153, 51);
     }
 }
 
@@ -658,6 +663,9 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
         return ESP_ERR_NO_MEM;
     }
     map_app_size_scratch();
+    /* An indexed surface, and so colour, is only allocated for an app that
+     * says it is drawing. */
+    solar_os_context_set_graphics_active(ctx, true);
     map_app_world_view(solar_os_context_gfx(ctx));
     map_app_poll_self();
     map_app_refresh();
@@ -667,15 +675,21 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
 
 static void map_app_stop(solar_os_context_t *ctx)
 {
-    (void)ctx;
+    solar_os_context_set_graphics_active(ctx, false);
     solar_os_memory_free(map_app.points);
     solar_os_memory_free(map_app.paths);
     solar_os_memory_free(map_app.scratch);
     memset(&map_app, 0, sizeof(map_app));
 }
 
+static void map_app_suspend(solar_os_context_t *ctx)
+{
+    solar_os_context_set_graphics_active(ctx, false);
+}
+
 static void map_app_resume(solar_os_context_t *ctx)
 {
+    solar_os_context_set_graphics_active(ctx, true);
     /* A resume onto state that was never started has no scale yet. */
     if (map_app.meters_per_px == 0U) {
         map_app_world_view(solar_os_context_gfx(ctx));
@@ -788,6 +802,7 @@ const solar_os_app_t solar_os_map_app = {
     .app_class = SOLAR_OS_APP_CLASS_GUI,
     .flags = SOLAR_OS_APP_FLAG_RESUMABLE,
     .start = map_app_start,
+    .suspend = map_app_suspend,
     .resume = map_app_resume,
     .stop = map_app_stop,
     .event = map_app_event,
