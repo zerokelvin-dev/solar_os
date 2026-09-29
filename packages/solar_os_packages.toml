@@ -367,6 +367,11 @@ label = "MeshCore"
 category = "Radio"
 members = ["job_meshcore"]
 
+[groups.reticulum]
+label = "Reticulum"
+category = "Network"
+members = ["job_reticulum"]
+
 [groups.audio_commands]
 label = "Audio playback and recording commands"
 category = "Audio"
@@ -1366,6 +1371,53 @@ sources = [
 requires = ["mbedtls", "nvs_flash"]
 capabilities = ["psram"]
 any_capabilities = ["expansion_spi", "expansion_gpio", "expansion_uart"]
+
+[packages.service_reticulum]
+label = "service.reticulum"
+depends = ["service_credentials", "service_wifi"]
+sources = [
+  "services/solar_os_reticulum.cpp",
+  "services/solar_os_reticulum_hdlc.c",
+  "services/solar_os_reticulum_tcp.cpp",
+  "vendor/microreticulum/microReticulum/Bytes.cpp",
+  "vendor/microreticulum/microReticulum/Channel.cpp",
+  "vendor/microreticulum/microReticulum/Cryptography/Ed25519.cpp",
+  "vendor/microreticulum/microReticulum/Cryptography/Fernet.cpp",
+  "vendor/microreticulum/microReticulum/Cryptography/Hashes.cpp",
+  "vendor/microreticulum/microReticulum/Cryptography/HKDF.cpp",
+  "vendor/microreticulum/microReticulum/Cryptography/Token.cpp",
+  "vendor/microreticulum/microReticulum/Cryptography/X25519.cpp",
+  "vendor/microreticulum/microReticulum/Destination.cpp",
+  "vendor/microreticulum/microReticulum/Identity.cpp",
+  "vendor/microreticulum/microReticulum/Interface.cpp",
+  "vendor/microreticulum/microReticulum/Link.cpp",
+  "vendor/microreticulum/microReticulum/Log.cpp",
+  "vendor/microreticulum/microReticulum/Packet.cpp",
+  "vendor/microreticulum/microReticulum/Persistence/DestinationEntry.cpp",
+  "vendor/microreticulum/microReticulum/Persistence/IdentityEntry.cpp",
+  "vendor/microreticulum/microReticulum/Resource.cpp",
+  "vendor/microreticulum/microReticulum/Reticulum.cpp",
+  "vendor/microreticulum/microReticulum/Transport.cpp",
+  "vendor/microreticulum/microReticulum/Utilities/Compress.cpp",
+  "vendor/microreticulum/microReticulum/Utilities/Crc.cpp",
+  "vendor/microreticulum/microReticulum/Utilities/heatshrink/heatshrink_decoder.c",
+  "vendor/microreticulum/microReticulum/Utilities/heatshrink/heatshrink_encoder.c",
+  "vendor/microreticulum/microReticulum/Utilities/Memory.cpp",
+  "vendor/microreticulum/microReticulum/Utilities/OS.cpp",
+  "vendor/microreticulum/microReticulum/Utilities/Persistence.cpp",
+  "vendor/meshcore/ed25519/add_scalar.c",
+  "vendor/meshcore/ed25519/fe.c",
+  "vendor/meshcore/ed25519/ge.c",
+  "vendor/meshcore/ed25519/key_exchange.c",
+  "vendor/meshcore/ed25519/keypair.c",
+  "vendor/meshcore/ed25519/sc.c",
+  "vendor/meshcore/ed25519/seed.c",
+  "vendor/meshcore/ed25519/sha512.c",
+  "vendor/meshcore/ed25519/sign.c",
+  "vendor/meshcore/ed25519/verify.c",
+]
+requires = ["esp_timer", "lwip", "mbedtls", "wireguard_lwip"]
+capabilities = ["psram", "sd", "wifi"]
 
 [packages.expansion_rfm69]
 label = "expansion.rfm69"
@@ -2503,6 +2555,15 @@ label = "job.ntp-sync"
 depends = ["service_net"]
 sources = ["jobs/solar_os_ntp_sync_job.c"]
 capabilities = ["wifi"]
+
+[packages.job_reticulum]
+label = "job.reticulum"
+depends = ["service_reticulum"]
+sources = [
+  "jobs/solar_os_reticulum_job.c",
+  "shell/solar_os_shell_reticulum.c",
+]
+capabilities = ["psram", "sd", "wifi"]
 
 [packages.service_speech]
 label = "service.speech"

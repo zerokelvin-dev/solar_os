@@ -1049,6 +1049,10 @@ available for the compiled board.
 | `meshcore` | `meshcore stream list` or `meshcore stream status [port]` | Inspect trusted peer-bound virtual serial ports carried by encrypted MeshCore direct packets. |
 | `meshcore` | `meshcore stream create <port> <trusted-endpoint-id>` | Register a reliable MeshCore virtual serial port for one exact trusted endpoint. Configure both peers. |
 | `meshcore` | `meshcore stream remove <port>` | Remove an unclaimed MeshCore virtual serial port. |
+| `reticulum` | `reticulum status` | Show Reticulum identity, destination, TCP server, frame, announce, exception, and stack state. |
+| `reticulum` | `reticulum identity show\|generate\|import\|export` | Inspect or explicitly manage the private Reticulum identity. |
+| `reticulum` | `reticulum announce` | Announce the SolarOS destination to the connected Reticulum network. |
+| `reticulum` | `reticulum announces` | List announces heard from other Reticulum destinations. |
 | `radio` | `radio state <name> [sleep|standby|rx|tx]` | Show or change radio operating state. |
 | `radio` | `radio send <name> <text|byte...>` | Send one packet. |
 | `radio` | `radio recv <name> [timeout-ms]` | Receive one packet and print metadata plus payload. |

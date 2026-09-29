@@ -584,6 +584,10 @@ static const shell_command_t shell_builtin_commands[] = {
     {"meshcore", "MeshCore identity and radio messaging",
      solar_os_shell_cmd_meshcore},
 #endif
+#if SOLAR_OS_PACKAGE_JOB_RETICULUM
+    {"reticulum", "Reticulum network identity and announces",
+     solar_os_shell_cmd_reticulum},
+#endif
 #if SOLAR_OS_PACKAGE_JOB_POCSAG
     {"pocsag", "POCSAG pager send and receive", solar_os_shell_cmd_pocsag},
 #endif
@@ -1002,6 +1006,14 @@ static const char * const meshcore_stream_subcommands[] = {
     "status", "list", "create", "remove",
 };
 static const char * const meshcore_stream_port_values[] = {"mser0", "mser1"};
+#endif
+#if SOLAR_OS_PACKAGE_JOB_RETICULUM
+static const char * const reticulum_subcommands[] = {
+    "status", "identity", "announce", "announces",
+};
+static const char * const reticulum_identity_subcommands[] = {
+    "show", "generate", "import", "export",
+};
 #endif
 
 static const char * const disk_subcommands[] = {
@@ -2143,6 +2155,12 @@ static const char * const path_meshcore_stream_remove[] = {
     "meshcore", "stream", "remove"
 };
 #endif
+#if SOLAR_OS_PACKAGE_JOB_RETICULUM
+static const char * const path_reticulum[] = {"reticulum"};
+static const char * const path_reticulum_identity[] = {
+    "reticulum", "identity"
+};
+#endif
 static const char * const path_job_start_slip[] = {"job", "start", "slip"};
 static const char * const path_job_start_slip_port[] = {
     "job",
@@ -3256,6 +3274,11 @@ static const shell_completion_rule_t shell_completion_rules[] = {
                             meshcore_stream_port_values),
     SHELL_COMPLETION_ENDPOINT_IDS(path_meshcore_stream_create_port),
     SHELL_COMPLETION_MESHCORE_STREAMS(path_meshcore_stream_remove),
+#endif
+#if SOLAR_OS_PACKAGE_JOB_RETICULUM
+    SHELL_COMPLETION_STATIC(path_reticulum, reticulum_subcommands),
+    SHELL_COMPLETION_STATIC(path_reticulum_identity,
+                            reticulum_identity_subcommands),
 #endif
     SHELL_COMPLETION_PORTS(path_job_start_slip),
 #if SOLAR_OS_PACKAGE_JOB_SLIP
