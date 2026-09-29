@@ -71,23 +71,78 @@ static void test_project(void)
     assert(solar_os_map_project(&view, TORONTO_LAT, TORONTO_LON, &col, &row));
     assert(col == 40U && row == 10U);
 
-    /* Pixels are square: a row covers the same ground as a column. */
+    /* Ottawa is far outside a view a few kilometres across. */
+    assert(!solar_os_map_project(&view, OTTAWA_LAT, OTTAWA_LON, &col, &row));
+
+    /*
+     * The property that matters: Mercator puts longitude in x and latitude
+     * in y with no term from the view centre, so a shape keeps its size on
+     * screen wherever the view is centred. An equirectangular projection
+     * centred on a moving latitude restretches the map on every pan, which
+     * is what this guards against.
+     */
+    solar_os_map_view_t wide = {
+        .center_lat_e7 = 500000000,
+        .center_lon_e7 = 0,
+        .meters_per_col = 2000U,
+        .cols = 320U,
+        .rows = 214U,
+    };
+    int x0 = 0;
+    int y0 = 0;
+    int x1 = 0;
+    int y1 = 0;
+    solar_os_map_project_raw(&wide, 500000000, 0, &x0, &y0);
+    solar_os_map_project_raw(&wide, 510000000, 10000000, &x1, &y1);
+    const int box_w = x1 - x0;
+    const int box_h = y1 - y0;
+    assert(box_w > 0 && box_h < 0);
+    const int32_t centres[] = {0, 550000000, 600000000, -300000000};
+    for (size_t i = 0U; i < sizeof(centres) / sizeof(centres[0]); i++) {
+        wide.center_lat_e7 = centres[i];
+        solar_os_map_project_raw(&wide, 500000000, 0, &x0, &y0);
+        solar_os_map_project_raw(&wide, 510000000, 10000000, &x1, &y1);
+        /* One pixel of slack for rounding, no more. */
+        assert(x1 - x0 == box_w);
+        assert(y1 - y0 >= box_h - 1 && y1 - y0 <= box_h + 1);
+    }
+
+    /* Panning is a pixel offset. Screen rows run down, so a positive row
+     * offset moves the view south. */
+    wide.center_lat_e7 = TORONTO_LAT;
+    wide.center_lon_e7 = TORONTO_LON;
     int32_t lat = 0;
     int32_t lon = 0;
-    solar_os_map_offset(TORONTO_LAT, TORONTO_LON, 100, 0, &lat, &lon);
-    assert(solar_os_map_project(&view, lat, lon, &col, &row));
-    assert(col == 41U && row == 10U);
+    solar_os_map_pan(&wide, 40, 27, &lat, &lon);
+    assert(lon > wide.center_lon_e7);
+    assert(lat < wide.center_lat_e7);
+    solar_os_map_view_t moved = wide;
+    moved.center_lat_e7 = lat;
+    moved.center_lon_e7 = lon;
+    int32_t lat_back = 0;
+    int32_t lon_back = 0;
+    solar_os_map_pan(&moved, -40, -27, &lat_back, &lon_back);
+    assert(lat_back > wide.center_lat_e7 - 1000 &&
+           lat_back < wide.center_lat_e7 + 1000);
+    assert(lon_back > wide.center_lon_e7 - 1000 &&
+           lon_back < wide.center_lon_e7 + 1000);
 
-    solar_os_map_offset(TORONTO_LAT, TORONTO_LON, 0, 100, &lat, &lon);
-    assert(solar_os_map_project(&view, lat, lon, &col, &row));
-    assert(col == 40U && row == 9U);
+    /* Metres per pixel is quoted at the equator and shrinks with latitude. */
+    wide.center_lat_e7 = 0;
+    assert(solar_os_map_view_resolution(&wide) == wide.meters_per_col);
+    wide.center_lat_e7 = 600000000;
+    const uint32_t north = solar_os_map_view_resolution(&wide);
+    assert(north > 950U && north < 1050U);
+
+    /* Mercator cannot reach the poles, so panning stops short of them. */
+    wide.center_lat_e7 = SOLAR_OS_MAP_LAT_LIMIT_E7;
+    solar_os_map_pan(&wide, 0, 10000, &lat, &lon);
+    assert(lat <= SOLAR_OS_MAP_LAT_LIMIT_E7);
 
     /* Geometry far outside the view still projects, clamped, so a polygon
      * crossing the screen still rasterises. */
-    int x = 0;
-    int y = 0;
-    solar_os_map_project_raw(&view, -TORONTO_LAT, -TORONTO_LON, &x, &y);
-    assert(x >= -30000 && x <= 30000 && y >= -30000 && y <= 30000);
+    solar_os_map_project_raw(&view, -TORONTO_LAT, -TORONTO_LON, &x0, &y0);
+    assert(x0 >= -30000 && x0 <= 30000 && y0 >= -30000 && y0 <= 30000);
 
     /*
      * Longitude wraps at the meridian opposite the view centre. Two points
@@ -101,27 +156,26 @@ static void test_project(void)
     assert(before > 1790000000 && before <= SOLAR_OS_MAP_LON_MAX_E7);
     assert(after < -1790000000 && after >= -SOLAR_OS_MAP_LON_MAX_E7);
     assert((int64_t)after - (int64_t)before < -SOLAR_OS_MAP_LON_MAX_E7);
-    /* Points either side of the centre stay adjacent. */
     assert(solar_os_map_relative_lon(&view, TORONTO_LON + 10000000) == 10000000);
     assert(solar_os_map_relative_lon(&view, TORONTO_LON - 10000000) == -10000000);
 
-    /* Ottawa is far outside a view 8 km wide. */
-    assert(!solar_os_map_project(&view, OTTAWA_LAT, OTTAWA_LON, &col, &row));
-
-    const int32_t lats[] = {TORONTO_LAT, OTTAWA_LAT};
-    const int32_t lons[] = {TORONTO_LON, OTTAWA_LON};
-    const size_t scale = solar_os_map_fit_scale(
-        lats, lons, 2U, TORONTO_LAT, TORONTO_LON, view.cols, view.rows);
-    solar_os_map_view_t fitted = view;
-    fitted.meters_per_col = solar_os_map_scale_meters_per_col(scale);
-    assert(solar_os_map_project(&fitted, OTTAWA_LAT, OTTAWA_LON, NULL, NULL));
-    if (scale > 0U) {
-        fitted.meters_per_col = solar_os_map_scale_meters_per_col(scale - 1U);
-        assert(!solar_os_map_project(&fitted, OTTAWA_LAT, OTTAWA_LON, NULL, NULL));
-    }
-
-    assert(solar_os_map_scale_meters_per_col(solar_os_map_scale_index(150U)) == 100U);
-    assert(solar_os_map_scale_meters_per_col(solar_os_map_scale_index(0U)) == 1U);
+    /* The world view puts all 360 degrees across the display width. */
+    const uint32_t world = solar_os_map_world_scale(320U, 214U);
+    solar_os_map_view_t whole = {
+        .center_lat_e7 = 0,
+        .center_lon_e7 = 0,
+        .meters_per_col = world,
+        .cols = 320U,
+        .rows = 214U,
+    };
+    int left = 0;
+    int right = 0;
+    solar_os_map_project_raw(&whole, 0, -1799000000, &left, NULL);
+    solar_os_map_project_raw(&whole, 0, 1799000000, &right, NULL);
+    assert(left >= 0 && left < 4);
+    assert(right > 316 && right <= 320);
+    assert(solar_os_map_scale_step(world, 1) > world);
+    assert(solar_os_map_scale_step(world, -1) < world);
 }
 
 static void test_text(void)

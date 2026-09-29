@@ -11,6 +11,7 @@
 #define MAP_METERS_PER_DEGREE 111319.49079327357
 #define MAP_DEG_TO_RAD 0.017453292519943295
 #define MAP_E7 10000000.0
+#define MAP_PI 3.14159265358979323846
 
 /* Metres of ground per pixel. */
 static const uint32_t map_scales[] = {
@@ -85,6 +86,40 @@ int32_t solar_os_map_relative_lon(const solar_os_map_view_t *view,
     return (int32_t)delta;
 }
 
+/*
+ * Web Mercator. The world is a square of map_world_px pixels holding 360
+ * degrees of longitude, and latitude is stretched so that a small shape
+ * keeps its proportions anywhere on it.
+ */
+static float map_world_px(const solar_os_map_view_t *view)
+{
+    return (float)(2.0 * MAP_PI * MAP_EARTH_RADIUS_M) /
+           (float)view->meters_per_col;
+}
+
+static float map_mercator_y(int32_t lat_e7)
+{
+    int32_t clamped = lat_e7;
+    if (clamped > SOLAR_OS_MAP_LAT_LIMIT_E7) {
+        clamped = SOLAR_OS_MAP_LAT_LIMIT_E7;
+    } else if (clamped < -SOLAR_OS_MAP_LAT_LIMIT_E7) {
+        clamped = -SOLAR_OS_MAP_LAT_LIMIT_E7;
+    }
+    const float lat = (float)clamped / (float)MAP_E7;
+    return logf(tanf((45.0F + lat * 0.5F) * (float)MAP_DEG_TO_RAD));
+}
+
+uint32_t solar_os_map_view_resolution(const solar_os_map_view_t *view)
+{
+    if (view == NULL || view->meters_per_col == 0U) {
+        return 0U;
+    }
+    const float lat = (float)view->center_lat_e7 / (float)MAP_E7;
+    const float ground =
+        (float)view->meters_per_col * cosf(lat * (float)MAP_DEG_TO_RAD);
+    return ground < 1.0F ? 1U : (uint32_t)ground;
+}
+
 void solar_os_map_project_raw(const solar_os_map_view_t *view,
                               int32_t lat_e7,
                               int32_t lon_e7,
@@ -94,23 +129,13 @@ void solar_os_map_project_raw(const solar_os_map_view_t *view,
     if (view == NULL || view->meters_per_col == 0U) {
         return;
     }
-    /*
-     * Single precision throughout: a coastline is thousands of vertices a
-     * frame, and the ESP32 has no double-precision unit, so doubles here
-     * cost more than the whole rest of the draw. A float carries about a
-     * metre of precision at these magnitudes, well under one pixel.
-     */
-    const float center_lat = (float)view->center_lat_e7 / (float)MAP_E7;
+    const float world = map_world_px(view);
     const float d_lon =
         (float)solar_os_map_relative_lon(view, lon_e7) / (float)MAP_E7;
-    const float d_lat =
-        (float)(lat_e7 - view->center_lat_e7) / (float)MAP_E7;
-    const float cell = (float)view->meters_per_col;
-    const float east_m = d_lon * cosf(center_lat * (float)MAP_DEG_TO_RAD) *
-                         (float)MAP_METERS_PER_DEGREE;
-    const float north_m = d_lat * (float)MAP_METERS_PER_DEGREE;
-    float c = (float)(view->cols / 2U) + floorf(east_m / cell + 0.5F);
-    float r = (float)(view->rows / 2U) + floorf(-north_m / cell + 0.5F);
+    float c = (float)(view->cols / 2U) + world * d_lon / 360.0F;
+    float r = (float)(view->rows / 2U) +
+              world * (map_mercator_y(view->center_lat_e7) -
+                       map_mercator_y(lat_e7)) / (float)(2.0 * MAP_PI);
     if (c > MAP_PROJECT_LIMIT) {
         c = MAP_PROJECT_LIMIT;
     } else if (c < -MAP_PROJECT_LIMIT) {
@@ -127,6 +152,40 @@ void solar_os_map_project_raw(const solar_os_map_view_t *view,
     }
     if (y != NULL) {
         *y = (int)r;
+    }
+}
+
+void solar_os_map_pan(const solar_os_map_view_t *view,
+                      int columns,
+                      int rows,
+                      int32_t *out_lat_e7,
+                      int32_t *out_lon_e7)
+{
+    if (view == NULL || view->meters_per_col == 0U) {
+        return;
+    }
+    const float world = map_world_px(view);
+    double lon = (double)view->center_lon_e7 / MAP_E7 +
+                 (double)columns * 360.0 / (double)world;
+    while (lon > 180.0) {
+        lon -= 360.0;
+    }
+    while (lon < -180.0) {
+        lon += 360.0;
+    }
+    const double merc = (double)map_mercator_y(view->center_lat_e7) -
+                        (double)rows * 2.0 * MAP_PI / (double)world;
+    const double lat = (2.0 * atan(exp(merc)) - MAP_PI / 2.0) / MAP_DEG_TO_RAD;
+    if (out_lat_e7 != NULL) {
+        const long scaled = lround(lat * MAP_E7);
+        *out_lat_e7 = scaled > SOLAR_OS_MAP_LAT_LIMIT_E7
+                          ? SOLAR_OS_MAP_LAT_LIMIT_E7
+                          : (scaled < -SOLAR_OS_MAP_LAT_LIMIT_E7
+                                 ? -SOLAR_OS_MAP_LAT_LIMIT_E7
+                                 : (int32_t)scaled);
+    }
+    if (out_lon_e7 != NULL) {
+        *out_lon_e7 = (int32_t)lround(lon * MAP_E7);
     }
 }
 
@@ -155,48 +214,15 @@ bool solar_os_map_project(const solar_os_map_view_t *view,
     return true;
 }
 
-void solar_os_map_offset(int32_t lat_e7,
-                         int32_t lon_e7,
-                         int64_t east_m,
-                         int64_t north_m,
-                         int32_t *out_lat_e7,
-                         int32_t *out_lon_e7)
-{
-    double lat = (double)lat_e7 / MAP_E7 +
-                 (double)north_m / MAP_METERS_PER_DEGREE;
-    if (lat > 90.0) {
-        lat = 90.0;
-    } else if (lat < -90.0) {
-        lat = -90.0;
-    }
-    double cos_lat = cos(lat * MAP_DEG_TO_RAD);
-    if (cos_lat < 0.01) {
-        cos_lat = 0.01;
-    }
-    double lon = (double)lon_e7 / MAP_E7 +
-                 (double)east_m / (MAP_METERS_PER_DEGREE * cos_lat);
-    while (lon > 180.0) {
-        lon -= 360.0;
-    }
-    while (lon < -180.0) {
-        lon += 360.0;
-    }
-    if (out_lat_e7 != NULL) {
-        *out_lat_e7 = (int32_t)lround(lat * MAP_E7);
-    }
-    if (out_lon_e7 != NULL) {
-        *out_lon_e7 = (int32_t)lround(lon * MAP_E7);
-    }
-}
-
 uint32_t solar_os_map_world_scale(size_t cols, size_t rows)
 {
     if (cols == 0U || rows == 0U) {
         return map_scales[sizeof(map_scales) / sizeof(map_scales[0]) - 1U];
     }
-    const double across = 360.0 * MAP_METERS_PER_DEGREE / (double)cols;
-    const double down = 180.0 * MAP_METERS_PER_DEGREE / (double)rows;
-    const double fit = across > down ? across : down;
+    /* Fit the full width of the world; Mercator is square, so the poles
+     * fall off the top and bottom of a screen wider than it is tall. */
+    (void)rows;
+    const double fit = 2.0 * MAP_PI * MAP_EARTH_RADIUS_M / (double)cols;
     return fit < 1.0 ? 1U : (uint32_t)fit;
 }
 

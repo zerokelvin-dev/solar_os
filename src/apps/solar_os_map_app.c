@@ -37,7 +37,6 @@ typedef struct {
     uint32_t meters_per_px;
     bool follow_self;
     bool centered;
-    bool needs_render;
     char feedback[48];
 } map_app_state_t;
 
@@ -280,7 +279,8 @@ static void map_app_draw_point(solar_os_gfx_t *gfx,
 
 static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
 {
-    const uint32_t meters = map_app.meters_per_px;
+    const solar_os_map_view_t view = map_app_view(gfx);
+    const uint32_t meters = solar_os_map_view_resolution(&view);
     const int bar = 50;
     char distance[16];
     solar_os_map_format_distance(meters * (uint32_t)bar, distance, sizeof(distance));
@@ -298,7 +298,10 @@ static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
     char line[96];
     const solar_os_map_point_t *point = map_app_selected();
     char distance[16];
-    solar_os_map_format_distance(map_app.meters_per_px, distance, sizeof(distance));
+    const solar_os_map_view_t scale_view = map_app_view(gfx);
+    solar_os_map_format_distance(solar_os_map_view_resolution(&scale_view),
+                                 distance,
+                                 sizeof(distance));
     if (map_app.feedback[0] != '\0') {
         strlcpy(line, map_app.feedback, sizeof(line));
     } else if (point == NULL) {
@@ -349,7 +352,6 @@ static void map_app_render(solar_os_context_t *ctx)
     if (gfx == NULL) {
         return;
     }
-    map_app.needs_render = false;
     const int width = (int)solar_os_gfx_width(gfx);
     const int height = (int)solar_os_gfx_height(gfx);
     const int area = map_app_area_height(gfx);
@@ -413,17 +415,12 @@ static void map_app_pan(solar_os_context_t *ctx, int columns, int rows)
     if (gfx == NULL) {
         return;
     }
-    const int64_t meters = map_app.meters_per_px;
-    const int64_t east = (int64_t)columns * meters *
-                         (int64_t)(solar_os_gfx_width(gfx) / MAP_APP_PAN_DIVISOR);
-    const int64_t north = (int64_t)rows * meters *
-                          (int64_t)(map_app_area_height(gfx) / MAP_APP_PAN_DIVISOR);
-    solar_os_map_offset(map_app.center_lat_e7,
-                        map_app.center_lon_e7,
-                        east,
-                        north,
-                        &map_app.center_lat_e7,
-                        &map_app.center_lon_e7);
+    const solar_os_map_view_t view = map_app_view(gfx);
+    solar_os_map_pan(&view,
+                     columns * (int)(view.cols / MAP_APP_PAN_DIVISOR),
+                     -rows * (int)(view.rows / MAP_APP_PAN_DIVISOR),
+                     &map_app.center_lat_e7,
+                     &map_app.center_lon_e7);
     map_app.follow_self = false;
     map_app.centered = true;
 }
@@ -506,12 +503,6 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
     map_app_poll_self();
     map_app_refresh();
     map_app_render(ctx);
-    /*
-     * Becoming the foreground session clears the display after the app has
-     * started, so the first frame has to be drawn again once the session is
-     * showing rather than only when a point changes.
-     */
-    map_app.needs_render = true;
     return ESP_OK;
 }
 
@@ -531,7 +522,6 @@ static void map_app_resume(solar_os_context_t *ctx)
     }
     map_app_refresh();
     map_app_render(ctx);
-    map_app.needs_render = true;
 }
 
 static void map_app_title(solar_os_context_t *ctx, char *buffer, size_t buffer_len)
@@ -555,11 +545,14 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         if (solar_os_map_get_status(&status) == ESP_OK &&
             status.generation != map_app.generation) {
             map_app_refresh();
-            map_app.needs_render = true;
         }
-        if (map_app.needs_render) {
-            map_app_render(ctx);
-        }
+        /*
+         * Redrawn every tick, not only when a point moves. Anything else
+         * that paints the display leaves the map holding pixels it no
+         * longer owns, and there is no event that says so, so the only way
+         * to stay on screen is to keep putting it back.
+         */
+        map_app_render(ctx);
         return true;
     }
     if (event->type != SOLAR_OS_EVENT_CHAR) {
@@ -642,5 +635,6 @@ const solar_os_app_t solar_os_map_app = {
     .state_slot = &map_app_state,
     .state_size = sizeof(map_app_state_t),
     .state_storage = SOLAR_OS_APP_STATE_EXTERNAL_PREFERRED,
-    .tick_interval_ms = 500U,
+    .tick_interval_ms = 1000U,
+    .tick_deadline_ms = 150U,
 };

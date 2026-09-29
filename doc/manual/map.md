@@ -116,7 +116,13 @@ hemisphere suffix (`79.3832W`).
 
 ## Projection
 
-The map uses an equirectangular projection around the view centre, which is
-accurate at the scales a small display can show and wrong near the poles.
+The map is Web Mercator, the projection every slippy map uses. Longitude
+sets x and latitude sets y with no term from the view centre, so panning
+only ever shifts the picture and shapes stay locally correct at every
+latitude. The cost is the familiar one: area grows towards the poles, and
+the projection stops short of them at about 85 degrees.
+
+The scale in the footer is the ground a pixel covers at the centre of the
+view, so it changes as you pan north or south even though the zoom has not.
 Distances and bearings in the info row are great-circle values and do not
 come from the projection.

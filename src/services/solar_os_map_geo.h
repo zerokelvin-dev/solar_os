@@ -9,6 +9,19 @@
 #define SOLAR_OS_MAP_LON_MAX_E7 1800000000
 #define SOLAR_OS_MAP_COORD_TEXT_MAX 28U
 
+/* Mercator cannot represent the poles; the projection stops here. */
+#define SOLAR_OS_MAP_LAT_LIMIT_E7 850511300
+
+/*
+ * The view is Web Mercator. Longitude maps to x and latitude to y with no
+ * term from the view centre, so panning only ever shifts the picture and
+ * never restretches it, and shapes stay locally correct at every latitude.
+ *
+ * meters_per_col is the ground a pixel covers at the equator, which is what
+ * keeps a pan from rescaling the map. At any other latitude a pixel covers
+ * that times the cosine of the latitude, which is what a scale bar has to
+ * report.
+ */
 typedef struct {
     int32_t center_lat_e7;
     int32_t center_lon_e7;
@@ -16,6 +29,16 @@ typedef struct {
     size_t cols;
     size_t rows;
 } solar_os_map_view_t;
+
+/* Ground per pixel at a latitude, for a scale bar or a distance readout. */
+uint32_t solar_os_map_view_resolution(const solar_os_map_view_t *view);
+
+/* Moves the centre by a pixel offset, which panning a Mercator view is. */
+void solar_os_map_pan(const solar_os_map_view_t *view,
+                      int columns,
+                      int rows,
+                      int32_t *out_lat_e7,
+                      int32_t *out_lon_e7);
 
 /*
  * Longitude relative to the view centre, normalised to plus or minus 180
@@ -55,14 +78,6 @@ bool solar_os_map_project(const solar_os_map_view_t *view,
                           int32_t lon_e7,
                           size_t *col,
                           size_t *row);
-
-/* Moves a coordinate by metres east/north; latitude clamps at the poles. */
-void solar_os_map_offset(int32_t lat_e7,
-                         int32_t lon_e7,
-                         int64_t east_m,
-                         int64_t north_m,
-                         int32_t *out_lat_e7,
-                         int32_t *out_lon_e7);
 
 /*
  * Metres per pixel at which the whole world fits the given area, and the
