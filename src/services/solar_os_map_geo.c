@@ -189,6 +189,37 @@ void solar_os_map_offset(int32_t lat_e7,
     }
 }
 
+uint32_t solar_os_map_world_scale(size_t cols, size_t rows)
+{
+    if (cols == 0U || rows == 0U) {
+        return map_scales[sizeof(map_scales) / sizeof(map_scales[0]) - 1U];
+    }
+    const double across = 360.0 * MAP_METERS_PER_DEGREE / (double)cols;
+    const double down = 180.0 * MAP_METERS_PER_DEGREE / (double)rows;
+    const double fit = across > down ? across : down;
+    return fit < 1.0 ? 1U : (uint32_t)fit;
+}
+
+uint32_t solar_os_map_scale_step(uint32_t meters_per_col, int direction)
+{
+    const size_t count = solar_os_map_scale_count();
+    if (direction > 0) {
+        for (size_t i = 0U; i < count; i++) {
+            if (map_scales[i] > meters_per_col) {
+                return map_scales[i];
+            }
+        }
+        return map_scales[count - 1U] > meters_per_col ? map_scales[count - 1U]
+                                                       : meters_per_col;
+    }
+    for (size_t i = count; i-- > 0;) {
+        if (map_scales[i] < meters_per_col) {
+            return map_scales[i];
+        }
+    }
+    return meters_per_col;
+}
+
 size_t solar_os_map_scale_count(void)
 {
     return sizeof(map_scales) / sizeof(map_scales[0]);

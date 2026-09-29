@@ -14,7 +14,9 @@
 #include "solar_os_memory.h"
 
 #define MAP_APP_SELF_POLL_MS 5000U
-#define MAP_APP_WORLD_SCALE_M 200000U
+/* Panning moves this fraction of the view, small enough that the shapes
+ * stay readable from one step to the next. */
+#define MAP_APP_PAN_DIVISOR 8
 /* The system status bar owns the top of a graphical session and draws over
  * whatever is under it, so the map starts below it and claims no title row
  * of its own. */
@@ -32,7 +34,7 @@ typedef struct {
     uint32_t last_self_poll_ms;
     int32_t center_lat_e7;
     int32_t center_lon_e7;
-    size_t scale;
+    uint32_t meters_per_px;
     bool follow_self;
     bool centered;
     bool needs_render;
@@ -79,7 +81,7 @@ static solar_os_map_view_t map_app_view(const solar_os_gfx_t *gfx)
     const solar_os_map_view_t view = {
         .center_lat_e7 = map_app.center_lat_e7,
         .center_lon_e7 = map_app.center_lon_e7,
-        .meters_per_col = solar_os_map_scale_meters_per_col(map_app.scale),
+        .meters_per_col = map_app.meters_per_px,
         .cols = solar_os_gfx_width(gfx),
         .rows = (size_t)map_app_area_height(gfx),
     };
@@ -97,13 +99,14 @@ static void map_app_fit(const solar_os_gfx_t *gfx)
         lat[i] = map_app.points[i].latitude_e7;
         lon[i] = map_app.points[i].longitude_e7;
     }
-    map_app.scale = solar_os_map_fit_scale(lat,
-                                           lon,
-                                           map_app.count,
-                                           map_app.center_lat_e7,
-                                           map_app.center_lon_e7,
-                                           solar_os_gfx_width(gfx),
-                                           (size_t)map_app_area_height(gfx));
+    map_app.meters_per_px = solar_os_map_scale_meters_per_col(
+        solar_os_map_fit_scale(lat,
+                               lon,
+                               map_app.count,
+                               map_app.center_lat_e7,
+                               map_app.center_lon_e7,
+                               solar_os_gfx_width(gfx),
+                               (size_t)map_app_area_height(gfx)));
 }
 
 static void map_app_center_on(const solar_os_map_point_t *point)
@@ -277,7 +280,7 @@ static void map_app_draw_point(solar_os_gfx_t *gfx,
 
 static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
 {
-    const uint32_t meters = solar_os_map_scale_meters_per_col(map_app.scale);
+    const uint32_t meters = map_app.meters_per_px;
     const int bar = 50;
     char distance[16];
     solar_os_map_format_distance(meters * (uint32_t)bar, distance, sizeof(distance));
@@ -295,9 +298,7 @@ static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
     char line[96];
     const solar_os_map_point_t *point = map_app_selected();
     char distance[16];
-    solar_os_map_format_distance(solar_os_map_scale_meters_per_col(map_app.scale),
-                                 distance,
-                                 sizeof(distance));
+    solar_os_map_format_distance(map_app.meters_per_px, distance, sizeof(distance));
     if (map_app.feedback[0] != '\0') {
         strlcpy(line, map_app.feedback, sizeof(line));
     } else if (point == NULL) {
@@ -412,11 +413,11 @@ static void map_app_pan(solar_os_context_t *ctx, int columns, int rows)
     if (gfx == NULL) {
         return;
     }
-    const int64_t meters = solar_os_map_scale_meters_per_col(map_app.scale);
+    const int64_t meters = map_app.meters_per_px;
     const int64_t east = (int64_t)columns * meters *
-                         (int64_t)(solar_os_gfx_width(gfx) / 4U);
+                         (int64_t)(solar_os_gfx_width(gfx) / MAP_APP_PAN_DIVISOR);
     const int64_t north = (int64_t)rows * meters *
-                          (int64_t)(map_app_area_height(gfx) / 4);
+                          (int64_t)(map_app_area_height(gfx) / MAP_APP_PAN_DIVISOR);
     solar_os_map_offset(map_app.center_lat_e7,
                         map_app.center_lon_e7,
                         east,
@@ -429,12 +430,20 @@ static void map_app_pan(solar_os_context_t *ctx, int columns, int rows)
 
 static void map_app_zoom(int direction)
 {
-    const size_t count = solar_os_map_scale_count();
-    if (direction > 0 && map_app.scale + 1U < count) {
-        map_app.scale++;
-    } else if (direction < 0 && map_app.scale > 0U) {
-        map_app.scale--;
-    }
+    map_app.meters_per_px =
+        solar_os_map_scale_step(map_app.meters_per_px, direction);
+}
+
+/* The whole world, centred, filling as much of the screen as it fits. */
+static void map_app_world_view(const solar_os_gfx_t *gfx)
+{
+    map_app.center_lat_e7 = 0;
+    map_app.center_lon_e7 = 0;
+    map_app.meters_per_px = solar_os_map_world_scale(
+        gfx != NULL ? solar_os_gfx_width(gfx) : 0U,
+        gfx != NULL ? (size_t)map_app_area_height(gfx) : 0U);
+    map_app.centered = false;
+    map_app.follow_self = false;
 }
 
 static void map_app_center_selected(void)
@@ -493,7 +502,7 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
             map_app.scratch_max = 0U;
         }
     }
-    map_app.scale = solar_os_map_scale_index(MAP_APP_WORLD_SCALE_M);
+    map_app_world_view(solar_os_context_gfx(ctx));
     map_app_poll_self();
     map_app_refresh();
     map_app_render(ctx);
@@ -516,6 +525,10 @@ static void map_app_stop(solar_os_context_t *ctx)
 
 static void map_app_resume(solar_os_context_t *ctx)
 {
+    /* A resume onto state that was never started has no scale yet. */
+    if (map_app.meters_per_px == 0U) {
+        map_app_world_view(solar_os_context_gfx(ctx));
+    }
     map_app_refresh();
     map_app_render(ctx);
     map_app.needs_render = true;

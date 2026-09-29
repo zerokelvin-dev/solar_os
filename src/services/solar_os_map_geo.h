@@ -64,6 +64,14 @@ void solar_os_map_offset(int32_t lat_e7,
                          int32_t *out_lat_e7,
                          int32_t *out_lon_e7);
 
+/*
+ * Metres per pixel at which the whole world fits the given area, and the
+ * next scale in or out of the fixed ladder. Zero metres per pixel is never
+ * a valid scale, so a view that still holds it has not been set up.
+ */
+uint32_t solar_os_map_world_scale(size_t cols, size_t rows);
+uint32_t solar_os_map_scale_step(uint32_t meters_per_col, int direction);
+
 size_t solar_os_map_scale_count(void);
 uint32_t solar_os_map_scale_meters_per_col(size_t index);
 /* Index of the largest scale not exceeding meters_per_col (clamped). */
