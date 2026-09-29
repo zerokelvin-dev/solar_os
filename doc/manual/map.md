@@ -81,10 +81,12 @@ Features are `coastline`, `water`, `rivers`, `major-roads`, `roads`,
 together than a given distance; there is no point keeping detail finer than
 a pixel at the zoom the layer is for.
 
-Match a layer to the zoom it is for. A file holding every road in a city is
-tens of thousands of line segments, and the map redraws all of them every
-second, so a layer that is far denser than the screen can show costs time
-for nothing.
+The map drops what it cannot show before drawing it: a ring whose bounds
+fall outside the view is skipped without projecting a vertex, an area
+smaller than a couple of pixels is skipped, and within a ring vertices
+closer together than a couple of pixels are dropped. A city layer seen from
+across the world is a few thousand segments rather than fifty thousand,
+which is the difference between a map and a solid black area.
 
 Getting the file onto the card: write it directly if the card is out of the
 device, or fetch it over the network from the device itself.
@@ -93,6 +95,23 @@ device, or fetch it over the network from the device itself.
 curl -o /sdcard/toronto.bin http://192.168.1.10:8000/toronto.bin
 map load /sdcard/toronto.bin
 ```
+
+## Paths
+
+A path is a line between two points, held as references rather than as
+coordinates, so it follows its endpoints as they move. That is what a mesh
+hop is: a link between two nodes whose positions keep changing.
+
+```text
+map path add <from-id> <to-id> [label]
+map path list
+map path remove <id>
+map path clear <source>
+```
+
+A path is removed with either of its endpoints, including when a point is
+evicted to make room. A line drawn to somewhere the map no longer knows is
+worse than no line.
 
 ## Point sources
 
@@ -122,9 +141,12 @@ instead.
 | `d` | Delete the selected point |
 | `q`, `Esc` | Leave the app |
 
-Coastlines are drawn as outlines rather than filled areas. Your own
-position is a filled circle inside a ring, a node is an open circle, and a
-waypoint is a cross. The selected point is boxed and labelled,
+Coastlines are drawn as outlines rather than filled areas, and paths as
+dashed lines. Your own position is a filled circle inside a ring, a node is
+an open circle, and a waypoint is a cross. A small cross sits at the centre
+of the view: panning moves the map under it, so it is what you line up with
+a target when working down from a zoomed-out view. Zooming holds the centre,
+so a target stays under the cross as you go in. The selected point is boxed and labelled,
 and the row under the map gives its coordinates, and the distance and
 bearing from your own position when one is known.
 
@@ -141,6 +163,10 @@ map fix                              publish the current GNSS position
 map layers                           list the built-in world and loaded layers
 map load <path>                      add a GeoJSON or packed layer on top
 map unload <index|all>               remove a loaded layer
+map path add <from-id> <to-id> [label]
+map path list
+map path remove <id>
+map path clear <source>
 ```
 
 Coordinates are decimal degrees, either signed (`-79.3832`) or with a

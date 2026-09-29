@@ -32,7 +32,7 @@ import urllib.request
 ENDPOINT = "https://overpass-api.de/api/interpreter"
 USER_AGENT = "SolarOS-map-layer/1 (+https://github.com/zerokelvin-dev/solar_os)"
 MAGIC = b"SOMB"
-VERSION = 1
+VERSION = 2
 E7 = 10000000.0
 RING_OPEN = 0x80000000
 
@@ -120,6 +120,10 @@ def pack(entries: list[tuple[list[tuple[int, int]], bool]]) -> bytes:
     out += struct.pack("<HHII", VERSION, 0, len(entries), points)
     for ring, is_open in entries:
         out += struct.pack("<I", len(ring) | (RING_OPEN if is_open else 0))
+    for ring, _ in entries:
+        lats = [lat for lat, _ in ring]
+        lons = [lon for _, lon in ring]
+        out += struct.pack("<iiii", min(lats), max(lats), min(lons), max(lons))
     for ring, _ in entries:
         for lat, lon in ring:
             out += struct.pack("<ii", lat, lon)

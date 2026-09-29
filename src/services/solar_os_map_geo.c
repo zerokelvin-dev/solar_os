@@ -120,6 +120,46 @@ uint32_t solar_os_map_view_resolution(const solar_os_map_view_t *view)
     return ground < 1.0F ? 1U : (uint32_t)ground;
 }
 
+int32_t solar_os_map_view_pixel_e7(const solar_os_map_view_t *view)
+{
+    if (view == NULL || view->meters_per_col == 0U) {
+        return 0;
+    }
+    const float degrees = 360.0F / map_world_px(view);
+    const float scaled = degrees * (float)MAP_E7;
+    return scaled < 1.0F ? 1 : (int32_t)scaled;
+}
+
+void solar_os_map_view_bounds(const solar_os_map_view_t *view,
+                              int32_t *lat_min,
+                              int32_t *lat_max,
+                              int32_t *lon_half)
+{
+    if (view == NULL || view->meters_per_col == 0U) {
+        return;
+    }
+    const int rows = (int)(view->rows / 2U) + 1;
+    int32_t top = 0;
+    int32_t bottom = 0;
+    int32_t ignored = 0;
+    solar_os_map_pan(view, 0, -rows, &top, &ignored);
+    solar_os_map_pan(view, 0, rows, &bottom, &ignored);
+    if (lat_max != NULL) {
+        *lat_max = top;
+    }
+    if (lat_min != NULL) {
+        *lat_min = bottom;
+    }
+    if (lon_half != NULL) {
+        const float half =
+            (float)(view->cols / 2U + 1U) * 360.0F / map_world_px(view);
+        const float scaled = half * (float)MAP_E7;
+        *lon_half = scaled >= (float)SOLAR_OS_MAP_LON_MAX_E7
+                        ? SOLAR_OS_MAP_LON_MAX_E7
+                        : (int32_t)scaled;
+    }
+}
+
 void solar_os_map_project_raw(const solar_os_map_view_t *view,
                               int32_t lat_e7,
                               int32_t lon_e7,

@@ -199,7 +199,12 @@ typedef struct {
     bool open;
 
     uint8_t *counts;
+    uint8_t *bounds;
     uint8_t *coordinates;
+    int32_t lat_min;
+    int32_t lat_max;
+    int32_t lon_min;
+    int32_t lon_max;
     uint32_t ring_index;
     uint32_t point_index;
     uint32_t ring_start;
@@ -215,11 +220,34 @@ static void build_ring_begin(void *user, bool open)
     build->ring_points = 0U;
     build->ring_start = build->point_index;
     build->open = open;
+    build->lat_min = 0;
+    build->lat_max = 0;
+    build->lon_min = 0;
+    build->lon_max = 0;
 }
 
 static void build_point(void *user, int32_t latitude_e7, int32_t longitude_e7)
 {
     geojson_build_t *build = user;
+    if (build->ring_points == 0U) {
+        build->lat_min = latitude_e7;
+        build->lat_max = latitude_e7;
+        build->lon_min = longitude_e7;
+        build->lon_max = longitude_e7;
+    } else {
+        if (latitude_e7 < build->lat_min) {
+            build->lat_min = latitude_e7;
+        }
+        if (latitude_e7 > build->lat_max) {
+            build->lat_max = latitude_e7;
+        }
+        if (longitude_e7 < build->lon_min) {
+            build->lon_min = longitude_e7;
+        }
+        if (longitude_e7 > build->lon_max) {
+            build->lon_max = longitude_e7;
+        }
+    }
     build->ring_points++;
     if (build->writing && build->point_index < build->points) {
         write_i32(&build->coordinates[build->point_index * 8U], latitude_e7);
@@ -239,6 +267,10 @@ static void build_ring_end(void *user)
     }
     if (build->writing) {
         if (build->ring_index < build->rings) {
+            write_i32(&build->bounds[build->ring_index * 16U], build->lat_min);
+            write_i32(&build->bounds[build->ring_index * 16U + 4U], build->lat_max);
+            write_i32(&build->bounds[build->ring_index * 16U + 8U], build->lon_min);
+            write_i32(&build->bounds[build->ring_index * 16U + 12U], build->lon_max);
             write_i32(&build->counts[build->ring_index++ * 4U],
                       (int32_t)(build->ring_points |
                                 (build->open ? SOLAR_OS_MAP_RING_OPEN : 0U)));
@@ -284,7 +316,7 @@ esp_err_t solar_os_map_geojson_read(FILE *file, uint8_t **out, size_t *out_size)
     }
 
     const size_t size = SOLAR_OS_MAP_LAYER_HEADER +
-                        (size_t)build.rings * 4U + (size_t)build.points * 8U;
+                        (size_t)build.rings * 20U + (size_t)build.points * 8U;
     uint8_t *data = solar_os_memory_calloc(1U,
                                            size,
                                            SOLAR_OS_MEMORY_EXTERNAL_REQUIRED,
@@ -298,8 +330,10 @@ esp_err_t solar_os_map_geojson_read(FILE *file, uint8_t **out, size_t *out_size)
     write_u32(&data[12], build.points);
 
     build.counts = &data[SOLAR_OS_MAP_LAYER_HEADER];
-    build.coordinates =
+    build.bounds =
         &data[SOLAR_OS_MAP_LAYER_HEADER + (size_t)build.rings * 4U];
+    build.coordinates =
+        &data[SOLAR_OS_MAP_LAYER_HEADER + (size_t)build.rings * 20U];
     build.writing = true;
     build.ring_points = 0U;
 

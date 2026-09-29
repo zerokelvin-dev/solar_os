@@ -14,9 +14,12 @@
  *
  * A ring's stored count carries SOLAR_OS_MAP_RING_OPEN when the ring is a
  * line rather than an area, so roads and tracks draw unfilled.
+ *
+ * Layout: header, then a count per ring, then bounds per ring as four
+ * coordinates, then the coordinates themselves.
  */
 #define SOLAR_OS_MAP_LAYER_MAGIC "SOMB"
-#define SOLAR_OS_MAP_LAYER_VERSION 1U
+#define SOLAR_OS_MAP_LAYER_VERSION 2U
 #define SOLAR_OS_MAP_LAYER_HEADER 16U
 #define SOLAR_OS_MAP_LAYER_MAX 4U
 #define SOLAR_OS_MAP_LAYER_NAME_MAX 32U
@@ -33,6 +36,12 @@ typedef struct {
     const int32_t *coordinates; /* latitude, longitude pairs */
     size_t point_count;
     bool open;
+    /* Bounds carried in the file so a ring off screen costs one compare
+     * rather than a projection of every vertex it holds. */
+    int32_t lat_min;
+    int32_t lat_max;
+    int32_t lon_min;
+    int32_t lon_max;
 } solar_os_map_ring_t;
 
 /* The generated world outline compiled into the firmware. */

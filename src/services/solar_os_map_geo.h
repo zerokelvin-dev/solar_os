@@ -33,6 +33,19 @@ typedef struct {
 /* Ground per pixel at a latitude, for a scale bar or a distance readout. */
 uint32_t solar_os_map_view_resolution(const solar_os_map_view_t *view);
 
+/*
+ * What the view can see, in coordinates: the latitude range it spans and
+ * half the longitude it spans either side of its centre. Geometry outside
+ * that costs nothing to reject and everything to project.
+ */
+void solar_os_map_view_bounds(const solar_os_map_view_t *view,
+                              int32_t *lat_min,
+                              int32_t *lat_max,
+                              int32_t *lon_half);
+
+/* Degrees, scaled by 1e7, that one pixel of the view covers. */
+int32_t solar_os_map_view_pixel_e7(const solar_os_map_view_t *view);
+
 /* Moves the centre by a pixel offset, which panning a Mercator view is. */
 void solar_os_map_pan(const solar_os_map_view_t *view,
                       int columns,

@@ -1314,8 +1314,13 @@ static const char * const inbox_notify_values[] = {"on", "off", "test"};
 #if SOLAR_OS_PACKAGE_APP_MAP
 static const char * const map_subcommands[] = {
     "status", "list", "add", "remove", "clear", "fix", "layers", "load",
-    "unload"
+    "unload", "path"
 };
+#if SOLAR_OS_PACKAGE_APP_MAP
+static const char * const map_path_subcommands[] = {
+    "add", "list", "remove", "clear"
+};
+#endif
 #endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
 static const char * const contacts_subcommands[] = {
@@ -1892,6 +1897,7 @@ static const char * const path_inbox_notify[] = {"inbox", "notify"};
 #endif
 #if SOLAR_OS_PACKAGE_APP_MAP
 static const char * const path_map[] = {"map"};
+static const char * const path_map_path[] = {"map", "path"};
 #endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
 static const char * const path_contacts[] = {"contacts"};
@@ -3394,6 +3400,7 @@ static const shell_completion_rule_t shell_completion_rules[] = {
 #endif
 #if SOLAR_OS_PACKAGE_APP_MAP
     SHELL_COMPLETION_STATIC(path_map, map_subcommands),
+    SHELL_COMPLETION_STATIC(path_map_path, map_path_subcommands),
 #endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
     SHELL_COMPLETION_STATIC(path_contacts, contacts_subcommands),

@@ -22,10 +22,21 @@
  * of its own. */
 #define MAP_APP_HEADER_H 14
 #define MAP_APP_INFO_H 12
+/* Detail finer than this many pixels is dropped before it is drawn. */
+#define MAP_APP_DETAIL_PX 2
+
+typedef struct {
+    int x;
+    int y;
+    /* Kept so a wrap can still be spotted after vertices are dropped. */
+    int32_t relative_lon;
+} map_app_vertex_t;
 
 typedef struct {
     solar_os_map_point_t *points;
-    solar_os_gfx_point_t *scratch;
+    solar_os_map_path_t *paths;
+    size_t path_count;
+    map_app_vertex_t *scratch;
     size_t scratch_max;
     size_t count;
     size_t total;
@@ -52,6 +63,16 @@ static const solar_os_map_point_t *map_app_self(void)
 {
     for (size_t i = 0; i < map_app.count; i++) {
         if (map_app.points[i].kind == SOLAR_OS_MAP_KIND_SELF) {
+            return &map_app.points[i];
+        }
+    }
+    return NULL;
+}
+
+static const solar_os_map_point_t *map_app_point_by_id(uint32_t id)
+{
+    for (size_t i = 0; i < map_app.count; i++) {
+        if (map_app.points[i].id == id) {
             return &map_app.points[i];
         }
     }
@@ -120,6 +141,9 @@ static void map_app_refresh(void)
     map_app.count = solar_os_map_snapshot(map_app.points,
                                           SOLAR_OS_MAP_CAPACITY,
                                           &map_app.total);
+    map_app.path_count = solar_os_map_path_snapshot(map_app.paths,
+                                                    SOLAR_OS_MAP_PATH_CAPACITY,
+                                                    NULL);
     solar_os_map_status_t status;
     if (solar_os_map_get_status(&status) == ESP_OK) {
         map_app.generation = status.generation;
@@ -167,7 +191,7 @@ static void map_app_size_scratch(void)
     if (longest == 0U || longest <= map_app.scratch_max) {
         return;
     }
-    solar_os_gfx_point_t *grown =
+    map_app_vertex_t *grown =
         solar_os_memory_calloc(longest,
                                sizeof(*grown),
                                SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
@@ -180,7 +204,20 @@ static void map_app_size_scratch(void)
     map_app.scratch_max = longest;
 }
 
-/* Geometry is drawn from rings of coordinates, so it needs no tiles. */
+/*
+ * Geometry is drawn from rings of coordinates, so it needs no tiles. Two
+ * things are thrown away before any of it reaches the screen, because a
+ * layer holding a whole city is tens of thousands of segments and most of
+ * them are neither visible nor distinguishable:
+ *
+ *  - a ring whose bounds fall outside the view, or which is smaller than a
+ *    couple of pixels, is skipped without projecting a single vertex;
+ *  - within a ring, vertices closer together than a couple of pixels are
+ *    dropped, since drawing them costs time to produce a smudge.
+ *
+ * Without the second one a dense layer seen from far away is not detail,
+ * it is a solid black area.
+ */
 static void map_app_draw_geometry(solar_os_gfx_t *gfx,
                                   const solar_os_map_view_t *view,
                                   const solar_os_map_geometry_t *geometry)
@@ -188,75 +225,90 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
     if (geometry == NULL || map_app.scratch == NULL) {
         return;
     }
+    int32_t lat_min = 0;
+    int32_t lat_max = 0;
+    int32_t lon_half = 0;
+    solar_os_map_view_bounds(view, &lat_min, &lat_max, &lon_half);
+    const int32_t step = MAP_APP_DETAIL_PX * solar_os_map_view_pixel_e7(view);
+    const int span = (int)view->cols;
+
     solar_os_map_ring_cursor_t cursor = {0};
     solar_os_map_ring_t ring;
     while (solar_os_map_geometry_next(geometry, &cursor, &ring)) {
-        if (ring.point_count > map_app.scratch_max) {
+        if (ring.lat_max < lat_min || ring.lat_min > lat_max) {
             continue;
         }
-        int left = 0;
-        int right = 0;
-        int top = 0;
-        int bottom = 0;
-        for (size_t point = 0U; point < ring.point_count; point++) {
-            int x = 0;
-            int y = 0;
-            solar_os_map_project_raw(view,
-                                     ring.coordinates[point * 2U],
-                                     ring.coordinates[point * 2U + 1U],
-                                     &x,
-                                     &y);
-            map_app.scratch[point].x = x;
-            map_app.scratch[point].y = y + MAP_APP_HEADER_H;
-            if (point == 0U) {
-                left = right = x;
-                top = bottom = y;
-            } else {
-                if (x < left) {
-                    left = x;
-                }
-                if (x > right) {
-                    right = x;
-                }
-                if (y < top) {
-                    top = y;
-                }
-                if (y > bottom) {
-                    bottom = y;
-                }
-            }
-        }
-        if (right < 0 || bottom < 0 || left >= (int)view->cols ||
-            top >= (int)view->rows) {
+        const int32_t low = solar_os_map_relative_lon(view, ring.lon_min);
+        const int32_t high = solar_os_map_relative_lon(view, ring.lon_max);
+        /* A ring straddling the far meridian comes back inverted; it has to
+         * be drawn rather than judged on a range that no longer means
+         * anything. */
+        if (low <= high && (high < -lon_half || low > lon_half)) {
             continue;
         }
         /*
-         * Coastlines are drawn as outlines rather than filled areas: a ring
-         * runs to hundreds of vertices, and a scanline fill of one costs
-         * more per frame than the whole map is worth on a small display.
-         *
+         * An area smaller than a couple of pixels is a dot worth nothing.
+         * A line that small is usually one piece of a road that carries on
+         * in the next ring, so dropping it would break the road rather
+         * than simplify it.
+         */
+        if (!ring.open &&
+            ring.lat_max - ring.lat_min < step &&
+            ring.lon_max - ring.lon_min < step) {
+            continue;
+        }
+
+        size_t kept = 0U;
+        int32_t last_lat = 0;
+        int32_t last_lon = 0;
+        for (size_t point = 0U; point < ring.point_count; point++) {
+            const int32_t lat = ring.coordinates[point * 2U];
+            const int32_t lon = ring.coordinates[point * 2U + 1U];
+            const bool ends = point == 0U || point + 1U == ring.point_count;
+            if (!ends) {
+                const int64_t moved = (int64_t)(lat > last_lat ? lat - last_lat
+                                                               : last_lat - lat) +
+                                      (int64_t)(lon > last_lon ? lon - last_lon
+                                                               : last_lon - lon);
+                if (moved < step) {
+                    continue;
+                }
+            }
+            if (kept >= map_app.scratch_max) {
+                break;
+            }
+            int x = 0;
+            int y = 0;
+            solar_os_map_project_raw(view, lat, lon, &x, &y);
+            map_app.scratch[kept].x = x;
+            map_app.scratch[kept].y = y + MAP_APP_HEADER_H;
+            map_app.scratch[kept].relative_lon =
+                solar_os_map_relative_lon(view, lon);
+            kept++;
+            last_lat = lat;
+            last_lon = lon;
+        }
+        if (kept < 2U) {
+            continue;
+        }
+
+        /*
          * A segment wider than the view is one whose ends were clamped, or
          * one crossing the meridian opposite the view centre, where
          * longitude wraps. Either way it would draw a line straight across
          * the map, so it is left out.
          */
-        const int span = (int)view->cols;
-        const size_t segments =
-            ring.open ? ring.point_count - 1U : ring.point_count;
+        const size_t segments = ring.open ? kept - 1U : kept;
         solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
         for (size_t point = 0U; point < segments; point++) {
-            const size_t next = (point + 1U) % ring.point_count;
+            const map_app_vertex_t *a = &map_app.scratch[point];
+            const map_app_vertex_t *b = &map_app.scratch[(point + 1U) % kept];
             const int64_t d_lon =
-                (int64_t)solar_os_map_relative_lon(
-                    view, ring.coordinates[next * 2U + 1U]) -
-                (int64_t)solar_os_map_relative_lon(
-                    view, ring.coordinates[point * 2U + 1U]);
+                (int64_t)b->relative_lon - (int64_t)a->relative_lon;
             if (d_lon > SOLAR_OS_MAP_LON_MAX_E7 ||
                 d_lon < -SOLAR_OS_MAP_LON_MAX_E7) {
                 continue;
             }
-            const solar_os_gfx_point_t *a = &map_app.scratch[point];
-            const solar_os_gfx_point_t *b = &map_app.scratch[next];
             if (b->x - a->x > span || a->x - b->x > span) {
                 continue;
             }
@@ -303,6 +355,23 @@ static void map_app_draw_point(solar_os_gfx_t *gfx,
     }
 }
 
+/*
+ * A reticle at the centre of the view. Panning moves the map under it, so
+ * it is what you line up with a target when you are working down from a
+ * zoomed-out view; the gap in the middle keeps whatever is underneath
+ * visible.
+ */
+static void map_app_draw_centre(solar_os_gfx_t *gfx, int area)
+{
+    const int x = (int)solar_os_gfx_width(gfx) / 2;
+    const int y = MAP_APP_HEADER_H + area / 2;
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+    solar_os_gfx_line(gfx, x - 5, y, x - 2, y);
+    solar_os_gfx_line(gfx, x + 2, y, x + 5, y);
+    solar_os_gfx_line(gfx, x, y - 5, x, y - 2);
+    solar_os_gfx_line(gfx, x, y + 2, x, y + 5);
+}
+
 static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
 {
     const solar_os_map_view_t view = map_app_view(gfx);
@@ -331,10 +400,16 @@ static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
     if (map_app.feedback[0] != '\0') {
         strlcpy(line, map_app.feedback, sizeof(line));
     } else if (point == NULL) {
+        /* With nothing selected the centre is what the reader is aiming,
+         * so the reticle's position is what the row should report. */
+        char centre[SOLAR_OS_MAP_COORD_TEXT_MAX];
+        solar_os_map_format_coord(map_app.center_lat_e7,
+                                  map_app.center_lon_e7,
+                                  centre);
         snprintf(line,
                  sizeof(line),
-                 "%u points  %s/px%s",
-                 (unsigned)map_app.total,
+                 "%s  %s/px%s",
+                 centre,
                  distance,
                  map_app.follow_self ? "  following" : "");
     } else {
@@ -386,6 +461,34 @@ static void map_app_render(solar_os_context_t *ctx)
     solar_os_gfx_clear(gfx, SOLAR_OS_GFX_COLOR_WHITE);
     map_app_draw_layers(gfx, &view);
 
+    /* Paths sit under the markers, dashed so they read as links rather
+     * than as terrain. */
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_DARK);
+    solar_os_gfx_set_line_style(gfx, SOLAR_OS_GFX_LINE_DASHED);
+    for (size_t i = 0U; i < map_app.path_count; i++) {
+        const solar_os_map_point_t *from =
+            map_app_point_by_id(map_app.paths[i].from_id);
+        const solar_os_map_point_t *to =
+            map_app_point_by_id(map_app.paths[i].to_id);
+        if (from == NULL || to == NULL) {
+            continue;
+        }
+        int x0 = 0;
+        int y0 = 0;
+        int x1 = 0;
+        int y1 = 0;
+        solar_os_map_project_raw(&view, from->latitude_e7, from->longitude_e7,
+                                 &x0, &y0);
+        solar_os_map_project_raw(&view, to->latitude_e7, to->longitude_e7,
+                                 &x1, &y1);
+        if (x1 - x0 > (int)view.cols || x0 - x1 > (int)view.cols) {
+            continue;
+        }
+        solar_os_gfx_line(gfx, x0, y0 + MAP_APP_HEADER_H, x1,
+                          y1 + MAP_APP_HEADER_H);
+    }
+    solar_os_gfx_set_line_style(gfx, SOLAR_OS_GFX_LINE_SOLID);
+
     const solar_os_map_point_t *selected = map_app_selected();
     /* Oldest first so the newest position draws on top. */
     for (size_t i = map_app.count; i-- > 0;) {
@@ -406,6 +509,7 @@ static void map_app_render(solar_os_context_t *ctx)
                            selected != NULL && selected->id == point->id);
     }
 
+    map_app_draw_centre(gfx, area);
     map_app_draw_scale_bar(gfx, MAP_APP_HEADER_H + area);
     map_app_draw_info(gfx, height - MAP_APP_INFO_H, width);
     map_app.feedback[0] = '\0';
@@ -511,7 +615,14 @@ static esp_err_t map_app_start(solar_os_context_t *ctx)
                                             sizeof(*map_app.points),
                                             SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
                                             "app.map");
-    if (map_app.points == NULL) {
+    map_app.paths = solar_os_memory_calloc(SOLAR_OS_MAP_PATH_CAPACITY,
+                                           sizeof(*map_app.paths),
+                                           SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+                                           "app.map.paths");
+    if (map_app.points == NULL || map_app.paths == NULL) {
+        solar_os_memory_free(map_app.points);
+        solar_os_memory_free(map_app.paths);
+        memset(&map_app, 0, sizeof(map_app));
         return ESP_ERR_NO_MEM;
     }
     map_app_size_scratch();
@@ -526,6 +637,7 @@ static void map_app_stop(solar_os_context_t *ctx)
 {
     (void)ctx;
     solar_os_memory_free(map_app.points);
+    solar_os_memory_free(map_app.paths);
     solar_os_memory_free(map_app.scratch);
     memset(&map_app, 0, sizeof(map_app));
 }

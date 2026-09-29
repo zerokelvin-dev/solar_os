@@ -17,7 +17,7 @@
 
 static const char * const map_commands[] = {
     "status", "list", "add", "remove", "clear", "fix", "layers", "load",
-    "unload",
+    "unload", "path",
 };
 
 static void map_usage(solar_os_shell_io_t *io)
@@ -33,6 +33,10 @@ static void map_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "  map layers");
     solar_os_shell_io_writeln(io, "  map load <path>");
     solar_os_shell_io_writeln(io, "  map unload <index|all>");
+    solar_os_shell_io_writeln(io, "  map path add <from-id> <to-id> [label]");
+    solar_os_shell_io_writeln(io, "  map path list");
+    solar_os_shell_io_writeln(io, "  map path remove <id>");
+    solar_os_shell_io_writeln(io, "  map path clear [source]");
 }
 
 static void map_status(solar_os_shell_io_t *io)
@@ -48,6 +52,10 @@ static void map_status(solar_os_shell_io_t *io)
                              (unsigned)status.count,
                              (unsigned)status.capacity,
                              (unsigned)status.evicted);
+    solar_os_shell_io_printf(io,
+                             "Paths: %u/%u\n",
+                             (unsigned)status.path_count,
+                             (unsigned)status.path_capacity);
     solar_os_shell_io_printf(io,
                              "Layers: %u of %u\n",
                              (unsigned)solar_os_map_layer_count(),
@@ -81,6 +89,104 @@ static void map_list(solar_os_shell_io_t *io)
                                  coord);
     }
     solar_os_memory_free(points);
+}
+
+static bool map_parse_id(const char *text, uint32_t *id)
+{
+    char *end = NULL;
+    errno = 0;
+    const unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value == 0UL ||
+        value > UINT32_MAX) {
+        return false;
+    }
+    *id = (uint32_t)value;
+    return true;
+}
+
+static void map_path(solar_os_shell_io_t *io, int argc, char **argv)
+{
+    if (argc >= 5 && strcmp(argv[2], "add") == 0 && argc <= 6) {
+        uint32_t from = 0U;
+        uint32_t to = 0U;
+        if (!map_parse_id(argv[3], &from) || !map_parse_id(argv[4], &to)) {
+            solar_os_shell_diag_invalid(io,
+                                        "map path add",
+                                        "point ID",
+                                        argv[3],
+                                        "two decimal point IDs from map list",
+                                        "map path add <from-id> <to-id> [label]",
+                                        false);
+            return;
+        }
+        char key[SOLAR_OS_MAP_KEY_MAX];
+        snprintf(key, sizeof(key), "%lu-%lu", (unsigned long)from,
+                 (unsigned long)to);
+        const solar_os_map_path_publish_t path = {
+            .source = MAP_SHELL_USER_SOURCE,
+            .key = key,
+            .label = argc == 6 ? argv[5] : key,
+            .from_id = from,
+            .to_id = to,
+        };
+        uint32_t id = 0U;
+        const esp_err_t err = solar_os_map_path_publish(&path, &id);
+        if (err == ESP_ERR_NOT_FOUND) {
+            solar_os_shell_io_writeln(io, "map path: no such point");
+        } else if (err != ESP_OK) {
+            solar_os_shell_io_printf(io, "map path: %s\n",
+                                     solar_os_shell_error_text(err));
+        } else {
+            solar_os_shell_io_printf(io, "path %u\n", (unsigned)id);
+        }
+        return;
+    }
+    if (argc == 3 && strcmp(argv[2], "list") == 0) {
+        solar_os_map_path_t paths[SOLAR_OS_MAP_PATH_CAPACITY];
+        size_t total = 0U;
+        const size_t count =
+            solar_os_map_path_snapshot(paths, SOLAR_OS_MAP_PATH_CAPACITY, &total);
+        if (count == 0U) {
+            solar_os_shell_io_writeln(io, "no paths");
+        }
+        for (size_t i = 0U; i < count; i++) {
+            solar_os_shell_io_printf(io,
+                                     "%4u %-10s %-20s %u -> %u\n",
+                                     (unsigned)paths[i].id,
+                                     paths[i].source,
+                                     paths[i].label,
+                                     (unsigned)paths[i].from_id,
+                                     (unsigned)paths[i].to_id);
+        }
+        return;
+    }
+    if (argc == 4 && strcmp(argv[2], "remove") == 0) {
+        uint32_t id = 0U;
+        if (!map_parse_id(argv[3], &id)) {
+            solar_os_shell_diag_invalid(io,
+                                        "map path remove",
+                                        "path ID",
+                                        argv[3],
+                                        "a decimal path ID from map path list",
+                                        "map path remove <id>",
+                                        false);
+            return;
+        }
+        const esp_err_t err = solar_os_map_path_remove(id);
+        solar_os_shell_io_printf(io,
+                                 "map path: %s\n",
+                                 err == ESP_OK ? "removed"
+                                               : solar_os_shell_error_text(err));
+        return;
+    }
+    if (argc == 4 && strcmp(argv[2], "clear") == 0) {
+        size_t removed = 0U;
+        (void)solar_os_map_path_remove_source(argv[3], &removed);
+        solar_os_shell_io_printf(io, "removed %u paths\n", (unsigned)removed);
+        return;
+    }
+    solar_os_shell_io_writeln(io,
+                              "usage: map path add|list|remove|clear");
 }
 
 static void map_add(solar_os_shell_io_t *io, char **argv)
@@ -197,6 +303,10 @@ void solar_os_shell_cmd_map(solar_os_context_t *ctx, int argc, char **argv)
                                                : "no GNSS fix available");
         return;
     }
+    if (strcmp(argv[1], "path") == 0 && argc >= 3) {
+        map_path(io, argc, argv);
+        return;
+    }
     if (strcmp(argv[1], "layers") == 0 && argc == 2) {
         for (size_t index = 0U; index < solar_os_map_layer_count(); index++) {
             const solar_os_map_geometry_t *layer = solar_os_map_layer(index);
@@ -260,7 +370,7 @@ void solar_os_shell_cmd_map(solar_os_context_t *ctx, int argc, char **argv)
                                    "map",
                                    argc,
                                    argv,
-                                   "map status|list|add|remove|clear|fix|layers|load|unload",
+                                   "map status|list|add|remove|clear|fix|layers|load|unload|path",
                                    map_commands,
                                    sizeof(map_commands) / sizeof(map_commands[0]));
 }

@@ -313,12 +313,101 @@ static void test_store(void)
     assert(solar_os_map_get(home, &point) == ESP_ERR_NOT_FOUND);
 }
 
+/* A path is two point references, and outlives neither of them. */
+static void test_paths(void)
+{
+    assert(solar_os_map_clear() == ESP_OK);
+    const uint32_t home = publish("user", "home", SOLAR_OS_MAP_KIND_WAYPOINT, TORONTO_LAT);
+    const uint32_t peer = publish("mesh", "peer", SOLAR_OS_MAP_KIND_NODE, OTTAWA_LAT);
+    const uint32_t other = publish("mesh", "other", SOLAR_OS_MAP_KIND_NODE, TORONTO_LAT);
+
+    const solar_os_map_path_publish_t hop = {
+        .source = "mesh",
+        .key = "home-peer",
+        .label = "hop 1",
+        .from_id = home,
+        .to_id = peer,
+    };
+    uint32_t path_id = 0U;
+    assert(solar_os_map_path_publish(&hop, &path_id) == ESP_OK);
+    assert(path_id != 0U);
+
+    solar_os_map_status_t status;
+    assert(solar_os_map_get_status(&status) == ESP_OK);
+    assert(status.path_count == 1U);
+
+    /* Republishing the same key moves the path rather than adding one. */
+    const solar_os_map_path_publish_t moved = {
+        .source = "mesh",
+        .key = "home-peer",
+        .from_id = home,
+        .to_id = other,
+    };
+    uint32_t again = 0U;
+    assert(solar_os_map_path_publish(&moved, &again) == ESP_OK);
+    assert(again == path_id);
+    assert(solar_os_map_get_status(&status) == ESP_OK);
+    assert(status.path_count == 1U);
+
+    solar_os_map_path_t paths[4];
+    size_t total = 0U;
+    assert(solar_os_map_path_snapshot(paths, 4U, &total) == 1U);
+    assert(total == 1U);
+    assert(paths[0].to_id == other);
+    assert(strcmp(paths[0].label, "home-peer") == 0);
+
+    /* Both endpoints must exist, and a path cannot join a point to itself. */
+    const solar_os_map_path_publish_t missing = {
+        .source = "mesh", .key = "ghost", .from_id = home, .to_id = 424242U,
+    };
+    assert(solar_os_map_path_publish(&missing, NULL) == ESP_ERR_NOT_FOUND);
+    const solar_os_map_path_publish_t loop = {
+        .source = "mesh", .key = "loop", .from_id = home, .to_id = home,
+    };
+    assert(solar_os_map_path_publish(&loop, NULL) == ESP_ERR_INVALID_ARG);
+
+    /* Removing an endpoint takes the path with it. */
+    assert(solar_os_map_remove(other) == ESP_OK);
+    assert(solar_os_map_get_status(&status) == ESP_OK);
+    assert(status.path_count == 0U);
+
+    /* So does removing a whole source. */
+    const solar_os_map_path_publish_t again_hop = {
+        .source = "mesh", .key = "home-peer", .from_id = home, .to_id = peer,
+    };
+    assert(solar_os_map_path_publish(&again_hop, NULL) == ESP_OK);
+    size_t removed = 0U;
+    assert(solar_os_map_remove_source("mesh", &removed) == ESP_OK);
+    assert(removed == 1U);
+    assert(solar_os_map_get_status(&status) == ESP_OK);
+    assert(status.path_count == 0U);
+
+    /* And so does an eviction, which is a removal the producer never asked
+     * for: fill the store with nodes until the peer is pushed out. */
+    const uint32_t anchor = publish("user", "anchor", SOLAR_OS_MAP_KIND_WAYPOINT, TORONTO_LAT);
+    const uint32_t victim = publish("mesh", "victim", SOLAR_OS_MAP_KIND_NODE, OTTAWA_LAT);
+    const solar_os_map_path_publish_t doomed = {
+        .source = "user", .key = "doomed", .from_id = anchor, .to_id = victim,
+    };
+    assert(solar_os_map_path_publish(&doomed, NULL) == ESP_OK);
+    for (size_t i = 0U; i < SOLAR_OS_MAP_CAPACITY; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "n%zu", i);
+        publish("flood", key, SOLAR_OS_MAP_KIND_NODE, TORONTO_LAT);
+    }
+    assert(solar_os_map_get_status(&status) == ESP_OK);
+    assert(status.evicted > 0U);
+    assert(status.path_count == 0U);
+    assert(solar_os_map_clear() == ESP_OK);
+}
+
 int main(void)
 {
     test_geo();
     test_project();
     test_text();
     test_store();
+    test_paths();
     printf("map_test ok\n");
     return 0;
 }

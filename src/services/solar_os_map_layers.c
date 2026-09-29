@@ -39,7 +39,8 @@ esp_err_t solar_os_map_geometry_parse(const uint8_t *data,
     const uint32_t rings = read_u32(&data[8]);
     const uint32_t points = read_u32(&data[12]);
     const size_t expected = SOLAR_OS_MAP_LAYER_HEADER +
-                            (size_t)rings * 4U + (size_t)points * 8U;
+                            (size_t)rings * 4U + (size_t)rings * 16U +
+                            (size_t)points * 8U;
     if (rings == 0U || points < rings * 2U || expected > size) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -74,11 +75,18 @@ bool solar_os_map_geometry_next(const solar_os_map_geometry_t *geometry,
     const uint8_t *counts = &geometry->data[SOLAR_OS_MAP_LAYER_HEADER];
     const uint32_t stored = read_u32(&counts[cursor->index * 4U]);
     const size_t count = stored & ~SOLAR_OS_MAP_RING_OPEN;
+    const size_t bounds_at = SOLAR_OS_MAP_LAYER_HEADER +
+                             (size_t)geometry->ring_count * 4U +
+                             (size_t)cursor->index * 16U;
     const size_t start = SOLAR_OS_MAP_LAYER_HEADER +
-                         (size_t)geometry->ring_count * 4U + cursor->offset * 8U;
+                         (size_t)geometry->ring_count * 20U + cursor->offset * 8U;
     ring->coordinates = (const int32_t *)(const void *)&geometry->data[start];
     ring->point_count = count;
     ring->open = (stored & SOLAR_OS_MAP_RING_OPEN) != 0U;
+    ring->lat_min = (int32_t)read_u32(&geometry->data[bounds_at]);
+    ring->lat_max = (int32_t)read_u32(&geometry->data[bounds_at + 4U]);
+    ring->lon_min = (int32_t)read_u32(&geometry->data[bounds_at + 8U]);
+    ring->lon_max = (int32_t)read_u32(&geometry->data[bounds_at + 12U]);
     cursor->index++;
     cursor->offset += count;
     return true;

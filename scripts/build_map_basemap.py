@@ -24,7 +24,7 @@ SOURCE = ("https://raw.githubusercontent.com/nvkelso/natural-earth-vector/"
           "master/geojson/ne_{level}_land.geojson")
 LEVELS = ("110m", "50m", "10m")
 MAGIC = b"SOMB"
-VERSION = 1
+VERSION = 2
 E7 = 10000000.0
 
 
@@ -78,6 +78,10 @@ def pack(ring_list: list[list[tuple[int, int]]]) -> bytes:
     out += struct.pack("<HHII", VERSION, 0, len(ring_list), points)
     for ring in ring_list:
         out += struct.pack("<I", len(ring))
+    for ring in ring_list:
+        lats = [lat for lat, _ in ring]
+        lons = [lon for _, lon in ring]
+        out += struct.pack("<iiii", min(lats), max(lats), min(lons), max(lons))
     for ring in ring_list:
         for lat, lon in ring:
             out += struct.pack("<ii", lat, lon)
