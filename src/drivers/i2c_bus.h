@@ -31,6 +31,16 @@ esp_err_t i2c_bus_stop_config(const i2c_bus_config_t *config,
 esp_err_t i2c_bus_set_speed(i2c_master_bus_handle_t handle,
                             uint32_t speed_hz);
 i2c_master_bus_handle_t i2c_bus_get_handle(void);
+/*
+ * The calls above that name no bus all address one default, which is
+ * whichever bus claimed it. A board with two I2C controllers has to say
+ * which of them that is rather than leave it to whichever started first,
+ * so the claim is made and released explicitly.
+ */
+bool i2c_bus_has_default(void);
+esp_err_t i2c_bus_adopt_default(const i2c_bus_config_t *config,
+                                i2c_master_bus_handle_t handle);
+void i2c_bus_release_default(i2c_master_bus_handle_t handle);
 void i2c_bus_lock(void);
 void i2c_bus_unlock(void);
 uint32_t i2c_bus_get_speed_hz(void);
