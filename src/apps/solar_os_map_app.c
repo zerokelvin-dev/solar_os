@@ -1,5 +1,6 @@
 #include "solar_os_map_app.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -37,6 +38,9 @@
 /* A shift no larger than this keeps the offset inside an int; past it the
  * world is wider than any screen and only the ring in front of us matters. */
 #define MAP_APP_SHIFT_LIMIT 1.0e8F
+/* Turns of the world either side of the view a ring may be placed at. Two
+ * covers the widest scale, where the world is narrower than the screen. */
+#define MAP_APP_REPEAT_MAX 3
 /* How many vertex spacings across a ring has to be before its shape means
  * anything. Below this it is a handful of points standing in for an
  * outline, and where that outline falls is an accident of sampling. */
@@ -130,7 +134,7 @@ static solar_os_gfx_color_t map_app_class_color(const solar_os_gfx_t *gfx,
      */
     switch (klass) {
     case SOLAR_OS_MAP_CLASS_WATER:
-        return solar_os_gfx_rgb(102, 153, 255);
+        return solar_os_gfx_rgb(153, 204, 255);
     case SOLAR_OS_MAP_CLASS_ROAD:
         return SOLAR_OS_GFX_COLOR_BLACK;
     case SOLAR_OS_MAP_CLASS_RAIL:
@@ -646,9 +650,28 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
          * the world is wider than the screen, which is every scale but the
          * one showing all of it.
          */
+        /*
+         * At the widest scale the whole world is two hundred pixels on a
+         * three-hundred-and-twenty pixel screen, so it tiles more than once
+         * and a ring can need placing two turns over. Taking one turn
+         * either side left a band of the view empty, and panning slid that
+         * band across Antarctica, which came and went with it.
+         */
         const float world_px = solar_os_map_world_px(view);
+        int first = 0;
+        int last = 0;
+        if (world_px >= 1.0F) {
+            first = (int)floorf((float)(-right) / world_px);
+            last = (int)ceilf((float)(span - left) / world_px);
+            if (first < -MAP_APP_REPEAT_MAX) {
+                first = -MAP_APP_REPEAT_MAX;
+            }
+            if (last > MAP_APP_REPEAT_MAX) {
+                last = MAP_APP_REPEAT_MAX;
+            }
+        }
         int shifted = 0;
-        for (int repeat = -1; repeat <= 1; repeat++) {
+        for (int repeat = first; repeat <= last; repeat++) {
             const float offset = (float)repeat * world_px;
             if (offset < -MAP_APP_SHIFT_LIMIT || offset > MAP_APP_SHIFT_LIMIT) {
                 continue;
@@ -734,30 +757,44 @@ static void map_app_draw_centre(solar_os_gfx_t *gfx, int area)
 }
 
 /*
- * The local time, at the far end of the scale row. A map is a thing you
- * read outdoors while working out where you are and how long the light
- * lasts, and the row already there had space nobody was using.
+ * The time where the reticle is, at the far end of the bar. A map is read
+ * outdoors, where the hour and the light left are part of the same question
+ * as where you are -- and the hour that matters is the one at the place you
+ * are looking at, not the one the device is set to.
+ *
+ * The offset comes from longitude, an hour for every fifteen degrees, which
+ * is what a time zone is before politics gets to it. Naming the real zone
+ * would need the boundaries of every one of them on board, so the label
+ * says which offset it used rather than claiming a name it cannot know.
  */
 static void map_app_draw_clock(solar_os_gfx_t *gfx, int baseline, int width)
 {
-    solar_os_datetime_t now;
-    if (solar_os_time_get_datetime(&now) != ESP_OK ||
-        !solar_os_time_datetime_is_valid(&now)) {
+    solar_os_datetime_t utc;
+    if (solar_os_time_get_utc_datetime(&utc) != ESP_OK ||
+        !solar_os_time_datetime_is_valid(&utc)) {
         return;
     }
-    char zone[SOLAR_OS_TIMEZONE_NAME_MAX];
-    solar_os_time_get_timezone(zone, sizeof(zone), NULL, 0);
-    /* A named zone is longer than the row can hold, so only its last part
-     * is shown: Toronto rather than America/Toronto. */
-    const char *shown = strrchr(zone, '/');
-    shown = shown != NULL ? shown + 1 : zone;
-    char text[40];
-    (void)snprintf(text, sizeof(text), "%02u:%02u %s",
-                   (unsigned)now.hour, (unsigned)now.minute, shown);
+    int offset = (int)((map_app.center_lon_e7 + (map_app.center_lon_e7 < 0
+                                                     ? -75000000
+                                                     : 75000000)) /
+                       150000000);
+    if (offset > 12) {
+        offset = 12;
+    } else if (offset < -12) {
+        offset = -12;
+    }
+    int hour = (int)utc.hour + offset;
+    if (hour < 0) {
+        hour += 24;
+    } else if (hour >= 24) {
+        hour -= 24;
+    }
+    char text[24];
+    (void)snprintf(text, sizeof(text), "%02d:%02u UTC%+d",
+                   hour, (unsigned)utc.minute, offset);
     const int text_width = (int)solar_os_gfx_text_width(gfx, text);
-    const int x = width - text_width - 4;
-    /* Only if it clears the scale reading, which is what the row is for. */
-    if (x < 6 + 50 + 5 + 40) {
+    const int x = width - text_width - 3;
+    if (x < 4) {
         return;
     }
     solar_os_gfx_text(gfx, x, baseline, text);
@@ -777,7 +814,6 @@ static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
     solar_os_gfx_line(gfx, 6 + bar, y - 3, 6 + bar, y + 3);
     solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
     solar_os_gfx_text(gfx, 6 + bar + 5, y + 3, distance);
-    map_app_draw_clock(gfx, y + 3, (int)solar_os_gfx_width(gfx));
 }
 
 static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
@@ -837,6 +873,7 @@ static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
     solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
     solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
     solar_os_gfx_text(gfx, 3, top + MAP_APP_INFO_H - 3, line);
+    map_app_draw_clock(gfx, top + MAP_APP_INFO_H - 3, width);
 }
 
 static void map_app_render(solar_os_context_t *ctx)
