@@ -37,6 +37,7 @@ typedef struct {
     solar_os_map_path_t *paths;
     size_t path_count;
     map_app_vertex_t *scratch;
+    int *crossings;
     size_t scratch_max;
     size_t count;
     size_t total;
@@ -233,12 +234,74 @@ static void map_app_size_scratch(void)
                                sizeof(*grown),
                                SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
                                "app.map.rings");
-    if (grown == NULL) {
+    int *crossings =
+        solar_os_memory_calloc(longest,
+                               sizeof(*crossings),
+                               SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+                               "app.map.fill");
+    if (grown == NULL || crossings == NULL) {
+        solar_os_memory_free(grown);
+        solar_os_memory_free(crossings);
         return;
     }
     solar_os_memory_free(map_app.scratch);
+    solar_os_memory_free(map_app.crossings);
     map_app.scratch = grown;
+    map_app.crossings = crossings;
     map_app.scratch_max = longest;
+}
+
+/*
+ * Fills a projected ring by scanlines. solar_os_gfx_fill_polygon takes
+ * sixteen vertices and a coastline runs to hundreds, so the crossings are
+ * gathered here and drawn as horizontal runs.
+ */
+static void map_app_fill_ring(solar_os_gfx_t *gfx,
+                              size_t count,
+                              int top,
+                              int bottom,
+                              int height)
+{
+    if (map_app.crossings == NULL || count < 3U) {
+        return;
+    }
+    if (top < MAP_APP_HEADER_H) {
+        top = MAP_APP_HEADER_H;
+    }
+    if (bottom > MAP_APP_HEADER_H + height) {
+        bottom = MAP_APP_HEADER_H + height;
+    }
+    for (int row = top; row < bottom; row++) {
+        size_t found = 0U;
+        for (size_t i = 0U; i < count && found < count; i++) {
+            const map_app_vertex_t *a = &map_app.scratch[i];
+            const map_app_vertex_t *b = &map_app.scratch[(i + 1U) % count];
+            if ((a->y <= row && b->y > row) || (b->y <= row && a->y > row)) {
+                const int span = b->y - a->y;
+                map_app.crossings[found++] =
+                    a->x + (row - a->y) * (b->x - a->x) / span;
+            }
+        }
+        if (found < 2U) {
+            continue;
+        }
+        for (size_t i = 1U; i < found; i++) {
+            const int key = map_app.crossings[i];
+            size_t j = i;
+            while (j > 0U && map_app.crossings[j - 1U] > key) {
+                map_app.crossings[j] = map_app.crossings[j - 1U];
+                j--;
+            }
+            map_app.crossings[j] = key;
+        }
+        for (size_t i = 0U; i + 1U < found; i += 2U) {
+            const int start = map_app.crossings[i];
+            const int width = map_app.crossings[i + 1U] - start;
+            if (width > 0) {
+                solar_os_gfx_fill_rect(gfx, start, row, width, 1);
+            }
+        }
+    }
 }
 
 /*
@@ -335,8 +398,36 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
          * longitude wraps. Either way it would draw a line straight across
          * the map, so it is left out.
          */
+        bool wraps = false;
+        for (size_t point = 0U; point + 1U < kept && !wraps; point++) {
+            const int64_t d_lon =
+                (int64_t)map_app.scratch[point + 1U].relative_lon -
+                (int64_t)map_app.scratch[point].relative_lon;
+            wraps = d_lon > SOLAR_OS_MAP_LON_MAX_E7 ||
+                    d_lon < -SOLAR_OS_MAP_LON_MAX_E7 ||
+                    map_app.scratch[point + 1U].x - map_app.scratch[point].x > span ||
+                    map_app.scratch[point].x - map_app.scratch[point + 1U].x > span;
+        }
         const size_t segments = ring.open ? kept - 1U : kept;
         solar_os_gfx_set_color(gfx, map_app_class_color(gfx, ring.klass));
+        /*
+         * An area is filled and then outlined; a line is only stroked. A
+         * ring that wraps the far meridian arrives split in two and would
+         * fill the width of the map, so it is outlined instead.
+         */
+        if (!ring.open && map_app_colour(gfx) && !wraps) {
+            int top = map_app.scratch[0].y;
+            int bottom = top;
+            for (size_t point = 1U; point < kept; point++) {
+                if (map_app.scratch[point].y < top) {
+                    top = map_app.scratch[point].y;
+                }
+                if (map_app.scratch[point].y > bottom) {
+                    bottom = map_app.scratch[point].y;
+                }
+            }
+            map_app_fill_ring(gfx, kept, top, bottom, (int)view->rows);
+        }
         for (size_t point = 0U; point < segments; point++) {
             const map_app_vertex_t *a = &map_app.scratch[point];
             const map_app_vertex_t *b = &map_app.scratch[(point + 1U) % kept];
@@ -495,7 +586,10 @@ static void map_app_render(solar_os_context_t *ctx)
     const int area = map_app_area_height(gfx);
     const solar_os_map_view_t view = map_app_view(gfx);
 
-    solar_os_gfx_clear(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+    /* Sea under everything, so land drawn over it reads as land. */
+    solar_os_gfx_clear(gfx,
+                       map_app_colour(gfx) ? solar_os_gfx_rgb(153, 204, 255)
+                                           : SOLAR_OS_GFX_COLOR_WHITE);
     map_app_draw_layers(gfx, &view);
 
     /* Paths sit under the markers, dashed so they read as links rather
@@ -679,6 +773,7 @@ static void map_app_stop(solar_os_context_t *ctx)
     solar_os_memory_free(map_app.points);
     solar_os_memory_free(map_app.paths);
     solar_os_memory_free(map_app.scratch);
+    solar_os_memory_free(map_app.crossings);
     memset(&map_app, 0, sizeof(map_app));
 }
 
