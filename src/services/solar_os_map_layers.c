@@ -39,10 +39,19 @@ esp_err_t solar_os_map_geometry_parse(const uint8_t *data,
     const uint32_t resolution = (uint32_t)(data[6] | (data[7] << 8)) * 100U;
     const uint32_t rings = read_u32(&data[8]);
     const uint32_t points = read_u32(&data[12]);
+    /*
+     * Every ring costs twenty bytes of table and every point eight, so a
+     * file of this size cannot hold more than this many of either. Checked
+     * before the multiplication, because size_t is thirty-two bits on the
+     * device and the products of a crafted header wrap to nothing.
+     */
+    if (rings == 0U || rings > size / 20U || points > size / 8U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
     const size_t expected = SOLAR_OS_MAP_LAYER_HEADER +
                             (size_t)rings * 4U + (size_t)rings * 16U +
                             (size_t)points * 8U;
-    if (rings == 0U || points < rings * 2U || expected > size) {
+    if (points < (size_t)rings * 2U || expected > size) {
         return ESP_ERR_INVALID_SIZE;
     }
     size_t counted = 0U;
