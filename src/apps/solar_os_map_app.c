@@ -124,7 +124,7 @@ static solar_os_gfx_color_t map_app_class_color(const solar_os_gfx_t *gfx,
     case SOLAR_OS_MAP_CLASS_BOUNDARY:
         return solar_os_gfx_rgb(153, 51, 153);
     default:
-        return solar_os_gfx_rgb(51, 153, 51);
+        return solar_os_gfx_rgb(102, 204, 102);
     }
 }
 
@@ -681,7 +681,7 @@ static void map_app_render(solar_os_context_t *ctx)
 
     /* Sea under everything, so land drawn over it reads as land. */
     solar_os_gfx_clear(gfx,
-                       map_app_colour(gfx) ? solar_os_gfx_rgb(153, 204, 255)
+                       map_app_colour(gfx) ? solar_os_gfx_rgb(204, 255, 255)
                                            : SOLAR_OS_GFX_COLOR_WHITE);
     map_app_draw_layers(gfx, &view);
 
