@@ -13,6 +13,19 @@ static inline SemaphoreHandle_t xSemaphoreCreateMutexStatic(
     return storage;
 }
 
+/* Drivers that allocate their own mutex get one shared sentinel here: the
+ * host tests are single-threaded, so the handle only has to be non-NULL. */
+static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
+{
+    static StaticSemaphore_t storage;
+    return &storage;
+}
+
+static inline void vSemaphoreDelete(SemaphoreHandle_t semaphore)
+{
+    (void)semaphore;
+}
+
 static inline int xSemaphoreTake(SemaphoreHandle_t semaphore,
                                  unsigned timeout)
 {
