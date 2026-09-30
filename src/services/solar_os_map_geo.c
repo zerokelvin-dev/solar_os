@@ -91,6 +91,17 @@ int32_t solar_os_map_relative_lon(const solar_os_map_view_t *view,
     return (int32_t)delta;
 }
 
+int32_t solar_os_map_relative_lon_delta(int32_t from_e7, int32_t to_e7)
+{
+    int64_t delta = (int64_t)to_e7 - (int64_t)from_e7;
+    if (delta > SOLAR_OS_MAP_LON_MAX_E7) {
+        delta -= MAP_LON_FULL_E7;
+    } else if (delta < -SOLAR_OS_MAP_LON_MAX_E7) {
+        delta += MAP_LON_FULL_E7;
+    }
+    return (int32_t)delta;
+}
+
 /*
  * Web Mercator. The world is a square of map_world_px pixels holding 360
  * degrees of longitude, and latitude is stretched so that a small shape
@@ -175,6 +186,7 @@ void solar_os_map_view_bounds(const solar_os_map_view_t *view,
 static struct {
     int32_t center_lat_e7;
     uint32_t meters_per_col;
+    size_t rows;
     float world_px;
     float center_merc;
     float merc_per_degree;
@@ -198,9 +210,11 @@ static void map_projection_constants(const solar_os_map_view_t *view,
 {
     if (!map_projection_cache.valid ||
         map_projection_cache.center_lat_e7 != view->center_lat_e7 ||
-        map_projection_cache.meters_per_col != view->meters_per_col) {
+        map_projection_cache.meters_per_col != view->meters_per_col ||
+        map_projection_cache.rows != view->rows) {
         map_projection_cache.center_lat_e7 = view->center_lat_e7;
         map_projection_cache.meters_per_col = view->meters_per_col;
+        map_projection_cache.rows = view->rows;
         map_projection_cache.world_px = map_world_px(view);
         map_projection_cache.center_merc = map_mercator_y(view->center_lat_e7);
         /*
@@ -225,9 +239,14 @@ static void map_projection_constants(const solar_os_map_view_t *view,
     *center_merc = map_projection_cache.center_merc;
 }
 
-void solar_os_map_project_raw(const solar_os_map_view_t *view,
+float solar_os_map_world_px(const solar_os_map_view_t *view)
+{
+    return map_world_px(view);
+}
+
+void solar_os_map_project_rel(const solar_os_map_view_t *view,
                               int32_t lat_e7,
-                              int32_t lon_e7,
+                              int64_t rel_lon_e7,
                               int *x,
                               int *y)
 {
@@ -237,8 +256,7 @@ void solar_os_map_project_raw(const solar_os_map_view_t *view,
     float world = 0.0F;
     float center_merc = 0.0F;
     map_projection_constants(view, &world, &center_merc);
-    const float d_lon =
-        (float)solar_os_map_relative_lon(view, lon_e7) / (float)MAP_E7;
+    const float d_lon = (float)rel_lon_e7 / (float)MAP_E7;
     float c = (float)(view->cols / 2U) + world * d_lon / 360.0F;
     float r = (float)(view->rows / 2U) +
               world * (center_merc - map_projection_merc(view, lat_e7)) /
@@ -260,6 +278,17 @@ void solar_os_map_project_raw(const solar_os_map_view_t *view,
     if (y != NULL) {
         *y = (int)r;
     }
+}
+
+void solar_os_map_project_raw(const solar_os_map_view_t *view,
+                              int32_t lat_e7,
+                              int32_t lon_e7,
+                              int *x,
+                              int *y)
+{
+    solar_os_map_project_rel(view, lat_e7,
+                             (int64_t)solar_os_map_relative_lon(view, lon_e7),
+                             x, y);
 }
 
 void solar_os_map_pan(const solar_os_map_view_t *view,

@@ -64,6 +64,23 @@ int32_t solar_os_map_relative_lon(const solar_os_map_view_t *view,
 
 /* Pixel coordinates without a bounds check, clamped so a polygon that runs
  * far off screen still rasterises. */
+/* The shorter way round from one longitude to another, in 1e7 degrees. */
+int32_t solar_os_map_relative_lon_delta(int32_t from_e7, int32_t to_e7);
+
+/* Pixels that the whole three hundred and sixty degrees spans at this scale. */
+float solar_os_map_world_px(const solar_os_map_view_t *view);
+
+/*
+ * Projects a longitude already measured from the view centre. It may run
+ * beyond half a turn, which is how a ring stays one continuous shape while
+ * crossing the meridian opposite the centre instead of being torn in two.
+ */
+void solar_os_map_project_rel(const solar_os_map_view_t *view,
+                              int32_t lat_e7,
+                              int64_t rel_lon_e7,
+                              int *x,
+                              int *y);
+
 void solar_os_map_project_raw(const solar_os_map_view_t *view,
                               int32_t lat_e7,
                               int32_t lon_e7,

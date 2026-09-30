@@ -24,12 +24,17 @@
 #define MAP_APP_INFO_H 12
 /* Detail finer than this many pixels is dropped before it is drawn. */
 #define MAP_APP_DETAIL_PX 2
+/* A shift no larger than this keeps the offset inside an int; past it the
+ * world is wider than any screen and only the ring in front of us matters. */
+#define MAP_APP_SHIFT_LIMIT 1.0e8F
+/* How many vertex spacings across a ring has to be before its shape means
+ * anything. Below this it is a handful of points standing in for an
+ * outline, and where that outline falls is an accident of sampling. */
+#define MAP_APP_RING_MIN_SPACINGS 8
 
 typedef struct {
     int x;
     int y;
-    /* Kept so a wrap can still be spotted after vertices are dropped. */
-    int32_t relative_lon;
 } map_app_vertex_t;
 
 typedef struct {
@@ -274,8 +279,10 @@ static void map_app_fill_ring(solar_os_gfx_t *gfx,
     if (map_app.crossings == NULL || map_app.edges == NULL || count < 3U) {
         return;
     }
-    if (top < MAP_APP_HEADER_H) {
-        top = MAP_APP_HEADER_H;
+    /* The strokes reach the band kept for the status bar, so the ground
+     * has to as well, or the map draws roads over the colour of the sea. */
+    if (top < 0) {
+        top = 0;
     }
     if (bottom > MAP_APP_HEADER_H + height) {
         bottom = MAP_APP_HEADER_H + height;
@@ -340,6 +347,29 @@ static bool map_app_lon_wraps(int32_t lon_a, int32_t lon_b)
 {
     const int64_t delta = (int64_t)lon_b - (int64_t)lon_a;
     return delta > SOLAR_OS_MAP_LON_MAX_E7 || delta < -SOLAR_OS_MAP_LON_MAX_E7;
+}
+
+/*
+ * Whether a ring is too few vertex spacings across for its shape to mean
+ * anything. Lake Ontario at 1:110m is seventeen points for three hundred
+ * kilometres, which is not a lake so much as a rumour of one.
+ */
+static bool map_app_ring_is_coarser_than_itself(const solar_os_map_ring_t *ring,
+                                                uint32_t resolution_m)
+{
+    if (resolution_m == 0U) {
+        return false;
+    }
+    /* Metres to 1e7 degrees, near enough at any latitude for a threshold. */
+    const int64_t spacing_e7 =
+        (int64_t)resolution_m * 10000000LL / 111320LL;
+    if (spacing_e7 <= 0) {
+        return false;
+    }
+    const int64_t lat_span = (int64_t)ring->lat_max - (int64_t)ring->lat_min;
+    const int64_t lon_span = (int64_t)ring->lon_max - (int64_t)ring->lon_min;
+    const int64_t span = lat_span > lon_span ? lat_span : lon_span;
+    return span < spacing_e7 * MAP_APP_RING_MIN_SPACINGS;
 }
 
 /*
@@ -446,20 +476,34 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
          * than simplify it.
          */
         if (!ring.open &&
-            ring.lat_max - ring.lat_min < step &&
-            ring.lon_max - ring.lon_min < step) {
+            (int64_t)ring.lat_max - (int64_t)ring.lat_min < step &&
+            (int64_t)ring.lon_max - (int64_t)ring.lon_min < step) {
             continue;
         }
-        /* Too coarse to place an edge here: drop the ring if one of its
-         * segments would cross the view, keep it if they all stay away. */
+        /*
+         * Too coarse to place an edge here. A ring only a few vertex
+         * spacings across is a cartoon of a shape rather than a shape, and
+         * nothing it says about this view is worth drawing, so it goes: at
+         * 1:110m Lake Ontario is seventeen points, and its shore fell
+         * across downtown Toronto. A ring far larger than the spacing is
+         * still right about what it contains even where its edge is not,
+         * so it keeps its fill and loses only the outline, which is the
+         * part that would be a line in the wrong place.
+         */
+        bool outline = true;
         if (coarse && map_app_ring_edge_in_view(&ring, view, lat_min, lat_max,
                                                 lon_half)) {
-            continue;
+            if (map_app_ring_is_coarser_than_itself(&ring,
+                                                    geometry->resolution_m)) {
+                continue;
+            }
+            outline = false;
         }
 
         size_t kept = 0U;
         int32_t last_lat = 0;
         int32_t last_lon = 0;
+        int64_t relative = 0;
         for (size_t point = 0U; point < ring.point_count; point++) {
             const int32_t lat = ring.coordinates[point * 2U];
             const int32_t lon = ring.coordinates[point * 2U + 1U];
@@ -476,13 +520,26 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
             if (kept >= map_app.scratch_max) {
                 break;
             }
+            /*
+             * Longitude is carried along the ring rather than measured
+             * afresh at each vertex. Measured afresh it jumps a whole turn
+             * where the ring crosses the meridian opposite the centre, and
+             * the ring arrives as two pieces that cannot be filled: Africa,
+             * Europe and Asia are one ring of 1298 points, so centring on
+             * Toronto left every one of them unfilled. Carried, the ring
+             * simply runs past half a turn and stays a single shape.
+             */
+            if (kept == 0U) {
+                relative = (int64_t)solar_os_map_relative_lon(view, lon);
+            } else {
+                relative +=
+                    (int64_t)solar_os_map_relative_lon_delta(last_lon, lon);
+            }
             int x = 0;
             int y = 0;
-            solar_os_map_project_raw(view, lat, lon, &x, &y);
+            solar_os_map_project_rel(view, lat, relative, &x, &y);
             map_app.scratch[kept].x = x;
             map_app.scratch[kept].y = y + MAP_APP_HEADER_H;
-            map_app.scratch[kept].relative_lon =
-                solar_os_map_relative_lon(view, lon);
             kept++;
             last_lat = lat;
             last_lon = lon;
@@ -491,48 +548,63 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
             continue;
         }
 
-        /*
-         * Only a jump across the meridian opposite the view centre makes a
-         * ring unfillable. A segment merely wider than the screen is what
-         * every coastline looks like once you have zoomed into it, and
-         * treating that as a wrap left a continent unfilled and the whole
-         * view the colour of the sea.
-         */
-        bool wraps = false;
-        for (size_t point = 0U; point + 1U < kept && !wraps; point++) {
-            wraps = map_app_lon_wraps(map_app.scratch[point].relative_lon,
-                                      map_app.scratch[point + 1U].relative_lon);
-        }
         const size_t segments = ring.open ? kept - 1U : kept;
         solar_os_gfx_set_color(gfx, map_app_class_color(gfx, ring.klass));
-        /*
-         * An area is filled and then outlined; a line is only stroked. A
-         * ring that wraps the far meridian arrives split in two and would
-         * fill the width of the map, so it is outlined instead.
-         */
-        if (!ring.open && map_app_colour(gfx) && !wraps) {
-            int top = map_app.scratch[0].y;
-            int bottom = top;
-            for (size_t point = 1U; point < kept; point++) {
-                if (map_app.scratch[point].y < top) {
-                    top = map_app.scratch[point].y;
-                }
-                if (map_app.scratch[point].y > bottom) {
-                    bottom = map_app.scratch[point].y;
-                }
+        int left = map_app.scratch[0].x;
+        int right = left;
+        int top = map_app.scratch[0].y;
+        int bottom = top;
+        for (size_t point = 1U; point < kept; point++) {
+            const map_app_vertex_t *v = &map_app.scratch[point];
+            if (v->x < left) {
+                left = v->x;
             }
-            map_app_fill_ring(gfx, kept, top, bottom, (int)view->rows);
+            if (v->x > right) {
+                right = v->x;
+            }
+            if (v->y < top) {
+                top = v->y;
+            }
+            if (v->y > bottom) {
+                bottom = v->y;
+            }
         }
-        for (size_t point = 0U; point < segments; point++) {
-            const map_app_vertex_t *a = &map_app.scratch[point];
-            const map_app_vertex_t *b = &map_app.scratch[(point + 1U) % kept];
-            if (map_app_lon_wraps(a->relative_lon, b->relative_lon)) {
+        /*
+         * Longitude now runs on past half a turn, so a ring sits at one
+         * place on an endless line rather than wrapping onto the screen by
+         * itself. The world repeats every turn, so the ring is drawn at
+         * each repeat that reaches the view: one of them at any scale where
+         * the world is wider than the screen, which is every scale but the
+         * one showing all of it.
+         */
+        const float world_px = solar_os_map_world_px(view);
+        int shifted = 0;
+        for (int repeat = -1; repeat <= 1; repeat++) {
+            const float offset = (float)repeat * world_px;
+            if (offset < -MAP_APP_SHIFT_LIMIT || offset > MAP_APP_SHIFT_LIMIT) {
                 continue;
             }
-            if (b->x - a->x > span || a->x - b->x > span) {
+            const int shift = (int)offset;
+            if (left + shift >= span || right + shift < 0) {
                 continue;
             }
-            solar_os_gfx_line(gfx, a->x, a->y, b->x, b->y);
+            if (shift != shifted) {
+                for (size_t point = 0U; point < kept; point++) {
+                    map_app.scratch[point].x += shift - shifted;
+                }
+                shifted = shift;
+            }
+            if (!ring.open && map_app_colour(gfx)) {
+                map_app_fill_ring(gfx, kept, top, bottom, (int)view->rows);
+            }
+            if (!outline) {
+                continue;
+            }
+            for (size_t point = 0U; point < segments; point++) {
+                const map_app_vertex_t *a = &map_app.scratch[point];
+                const map_app_vertex_t *b = &map_app.scratch[(point + 1U) % kept];
+                solar_os_gfx_line(gfx, a->x, a->y, b->x, b->y);
+            }
         }
     }
 }
@@ -866,6 +938,7 @@ static void map_app_stop(solar_os_context_t *ctx)
     solar_os_memory_free(map_app.paths);
     solar_os_memory_free(map_app.scratch);
     solar_os_memory_free(map_app.crossings);
+    solar_os_memory_free(map_app.edges);
     memset(&map_app, 0, sizeof(map_app));
 }
 
