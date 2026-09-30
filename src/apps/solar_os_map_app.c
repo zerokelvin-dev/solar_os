@@ -11,12 +11,22 @@
 #include "solar_os_keys.h"
 #include "solar_os_map.h"
 #include "solar_os_map_layers.h"
+#include "solar_os_time.h"
+#include "solar_os_timezone.h"
 #include "solar_os_memory.h"
 
 #define MAP_APP_SELF_POLL_MS 5000U
 /* Panning moves this fraction of the view, small enough that the shapes
  * stay readable from one step to the next. */
 #define MAP_APP_PAN_DIVISOR 8
+/* ...but never more than this fraction of the way round the world, or a
+ * step zoomed right out crosses an ocean and there is nothing to follow
+ * from one press to the next. A screen-sized step is a world-sized step
+ * once the whole world is on the screen. */
+#define MAP_APP_PAN_WORLD_STEPS 22
+/* Where the map opens with no position of its own: far enough north that
+ * the continents, rather than the southern ocean, fill the screen. */
+#define MAP_APP_HOME_LAT_E7 200000000
 /* The system status bar owns the top of a graphical session and draws over
  * whatever is under it, so the map starts below it and claims no title row
  * of its own. */
@@ -113,15 +123,16 @@ static solar_os_gfx_color_t map_app_class_color(const solar_os_gfx_t *gfx,
         return SOLAR_OS_GFX_COLOR_BLACK;
     }
     /*
-     * Water takes the blue the paint app uses, so the two agree. The rest
-     * sit on the levels the indexed palette is built from, which are
-     * multiples of 51, so none of them shift when they are quantised.
+     * Every colour sits on the levels the indexed palette is built from,
+     * which are multiples of 51, so none of them shift when quantised.
+     * Roads are black because they have to read against land, and land is
+     * the lightest thing on the map.
      */
     switch (klass) {
     case SOLAR_OS_MAP_CLASS_WATER:
-        return solar_os_gfx_rgb(0x1e, 0x63, 0xd5);
+        return solar_os_gfx_rgb(102, 153, 255);
     case SOLAR_OS_MAP_CLASS_ROAD:
-        return solar_os_gfx_rgb(153, 102, 51);
+        return SOLAR_OS_GFX_COLOR_BLACK;
     case SOLAR_OS_MAP_CLASS_RAIL:
         return solar_os_gfx_rgb(102, 102, 102);
     case SOLAR_OS_MAP_CLASS_BUILDING:
@@ -129,7 +140,7 @@ static solar_os_gfx_color_t map_app_class_color(const solar_os_gfx_t *gfx,
     case SOLAR_OS_MAP_CLASS_BOUNDARY:
         return solar_os_gfx_rgb(153, 51, 153);
     default:
-        return solar_os_gfx_rgb(102, 204, 102);
+        return solar_os_gfx_rgb(153, 255, 153);
     }
 }
 
@@ -722,6 +733,36 @@ static void map_app_draw_centre(solar_os_gfx_t *gfx, int area)
     solar_os_gfx_line(gfx, x, y + 2, x, y + 5);
 }
 
+/*
+ * The local time, at the far end of the scale row. A map is a thing you
+ * read outdoors while working out where you are and how long the light
+ * lasts, and the row already there had space nobody was using.
+ */
+static void map_app_draw_clock(solar_os_gfx_t *gfx, int baseline, int width)
+{
+    solar_os_datetime_t now;
+    if (solar_os_time_get_datetime(&now) != ESP_OK ||
+        !solar_os_time_datetime_is_valid(&now)) {
+        return;
+    }
+    char zone[SOLAR_OS_TIMEZONE_NAME_MAX];
+    solar_os_time_get_timezone(zone, sizeof(zone), NULL, 0);
+    /* A named zone is longer than the row can hold, so only its last part
+     * is shown: Toronto rather than America/Toronto. */
+    const char *shown = strrchr(zone, '/');
+    shown = shown != NULL ? shown + 1 : zone;
+    char text[40];
+    (void)snprintf(text, sizeof(text), "%02u:%02u %s",
+                   (unsigned)now.hour, (unsigned)now.minute, shown);
+    const int text_width = (int)solar_os_gfx_text_width(gfx, text);
+    const int x = width - text_width - 4;
+    /* Only if it clears the scale reading, which is what the row is for. */
+    if (x < 6 + 50 + 5 + 40) {
+        return;
+    }
+    solar_os_gfx_text(gfx, x, baseline, text);
+}
+
 static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
 {
     const solar_os_map_view_t view = map_app_view(gfx);
@@ -736,6 +777,7 @@ static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
     solar_os_gfx_line(gfx, 6 + bar, y - 3, 6 + bar, y + 3);
     solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
     solar_os_gfx_text(gfx, 6 + bar + 5, y + 3, distance);
+    map_app_draw_clock(gfx, y + 3, (int)solar_os_gfx_width(gfx));
 }
 
 static void map_app_draw_info(solar_os_gfx_t *gfx, int top, int width)
@@ -899,9 +941,21 @@ static void map_app_pan(solar_os_context_t *ctx, int columns, int rows)
         return;
     }
     const solar_os_map_view_t view = map_app_view(gfx);
+    const float world_px = solar_os_map_world_px(&view);
+    const int world_step = world_px > 0.0F
+                               ? (int)(world_px / MAP_APP_PAN_WORLD_STEPS)
+                               : 0;
+    int across = (int)(view.cols / MAP_APP_PAN_DIVISOR);
+    int down = (int)(view.rows / MAP_APP_PAN_DIVISOR);
+    if (world_step > 0 && across > world_step) {
+        across = world_step;
+    }
+    if (world_step > 0 && down > world_step) {
+        down = world_step;
+    }
     solar_os_map_pan(&view,
-                     columns * (int)(view.cols / MAP_APP_PAN_DIVISOR),
-                     -rows * (int)(view.rows / MAP_APP_PAN_DIVISOR),
+                     columns * (across > 0 ? across : 1),
+                     -rows * (down > 0 ? down : 1),
                      &map_app.center_lat_e7,
                      &map_app.center_lon_e7);
     map_app.follow_self = false;
@@ -917,11 +971,18 @@ static void map_app_zoom(int direction)
 /* The whole world, centred, filling as much of the screen as it fits. */
 static void map_app_world_view(const solar_os_gfx_t *gfx)
 {
-    map_app.center_lat_e7 = 0;
+    /*
+     * Opening on the equator at the scale that fits the whole world spends
+     * half the screen on empty southern ocean. A step closer, centred in
+     * the northern hemisphere, puts the land where the reader is looking.
+     */
+    map_app.center_lat_e7 = MAP_APP_HOME_LAT_E7;
     map_app.center_lon_e7 = 0;
-    map_app.meters_per_px = solar_os_map_world_scale(
-        gfx != NULL ? solar_os_gfx_width(gfx) : 0U,
-        gfx != NULL ? (size_t)map_app_area_height(gfx) : 0U);
+    map_app.meters_per_px = solar_os_map_scale_step(
+        solar_os_map_world_scale(
+            gfx != NULL ? solar_os_gfx_width(gfx) : 0U,
+            gfx != NULL ? (size_t)map_app_area_height(gfx) : 0U),
+        -1);
     map_app.centered = false;
     map_app.follow_self = false;
 }
