@@ -158,14 +158,14 @@ static void map_app_fit(const solar_os_gfx_t *gfx)
         lat[i] = map_app.points[i].latitude_e7;
         lon[i] = map_app.points[i].longitude_e7;
     }
-    map_app.meters_per_px = solar_os_map_scale_meters_per_col(
+    map_app.meters_per_px =
         solar_os_map_fit_scale(lat,
                                lon,
                                map_app.count,
                                map_app.center_lat_e7,
                                map_app.center_lon_e7,
                                solar_os_gfx_width(gfx),
-                               (size_t)map_app_area_height(gfx)));
+                               (size_t)map_app_area_height(gfx));
 }
 
 static void map_app_center_on(const solar_os_map_point_t *point)
@@ -331,6 +331,18 @@ static void map_app_fill_ring(solar_os_gfx_t *gfx,
 }
 
 /*
+ * Whether two longitudes sit on opposite sides of the meridian facing away
+ * from the view centre. Measured from the centre, a segment crossing it
+ * reads as a jump most of the way around the world rather than the short
+ * step it is, and drawing it would streak a line across the map.
+ */
+static bool map_app_lon_wraps(int32_t lon_a, int32_t lon_b)
+{
+    const int64_t delta = (int64_t)lon_b - (int64_t)lon_a;
+    return delta > SOLAR_OS_MAP_LON_MAX_E7 || delta < -SOLAR_OS_MAP_LON_MAX_E7;
+}
+
+/*
  * Whether any of a ring's segments runs through the view, tested on the
  * stored coordinates so that a vertex far outside, whose projection is
  * clamped, cannot make an edge look as though it crosses the screen.
@@ -357,8 +369,7 @@ static bool map_app_ring_edge_in_view(const solar_os_map_ring_t *ring,
             solar_os_map_relative_lon(view, ring->coordinates[next * 2U + 1U]);
         /* A segment crossing the far meridian arrives inverted, and one of
          * its halves reaches the view from either side. */
-        const int64_t d_lon = (int64_t)lon_b - (int64_t)lon_a;
-        if (d_lon > SOLAR_OS_MAP_LON_MAX_E7 || d_lon < -SOLAR_OS_MAP_LON_MAX_E7) {
+        if (map_app_lon_wraps(lon_a, lon_b)) {
             return true;
         }
         if ((lon_a < -lon_half && lon_b < -lon_half) ||
@@ -487,19 +498,10 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
          * treating that as a wrap left a continent unfilled and the whole
          * view the colour of the sea.
          */
-        /*
-         * A segment wider than the view is one whose ends were clamped, or
-         * one crossing the meridian opposite the view centre, where
-         * longitude wraps. Either way it would draw a line straight across
-         * the map, so it is left out.
-         */
         bool wraps = false;
         for (size_t point = 0U; point + 1U < kept && !wraps; point++) {
-            const int64_t d_lon =
-                (int64_t)map_app.scratch[point + 1U].relative_lon -
-                (int64_t)map_app.scratch[point].relative_lon;
-            wraps = d_lon > SOLAR_OS_MAP_LON_MAX_E7 ||
-                    d_lon < -SOLAR_OS_MAP_LON_MAX_E7;
+            wraps = map_app_lon_wraps(map_app.scratch[point].relative_lon,
+                                      map_app.scratch[point + 1U].relative_lon);
         }
         const size_t segments = ring.open ? kept - 1U : kept;
         solar_os_gfx_set_color(gfx, map_app_class_color(gfx, ring.klass));
@@ -524,10 +526,7 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
         for (size_t point = 0U; point < segments; point++) {
             const map_app_vertex_t *a = &map_app.scratch[point];
             const map_app_vertex_t *b = &map_app.scratch[(point + 1U) % kept];
-            const int64_t d_lon =
-                (int64_t)b->relative_lon - (int64_t)a->relative_lon;
-            if (d_lon > SOLAR_OS_MAP_LON_MAX_E7 ||
-                d_lon < -SOLAR_OS_MAP_LON_MAX_E7) {
+            if (map_app_lon_wraps(a->relative_lon, b->relative_lon)) {
                 continue;
             }
             if (b->x - a->x > span || a->x - b->x > span) {

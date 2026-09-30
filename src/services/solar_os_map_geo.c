@@ -20,6 +20,11 @@ static const uint32_t map_scales[] = {
     50000U,  100000U, 200000U,
 };
 
+static size_t map_scale_count(void)
+{
+    return sizeof(map_scales) / sizeof(map_scales[0]);
+}
+
 bool solar_os_map_coord_valid(int32_t lat_e7, int32_t lon_e7)
 {
     return lat_e7 >= -SOLAR_OS_MAP_LAT_MAX_E7 &&
@@ -330,7 +335,7 @@ uint32_t solar_os_map_world_scale(size_t cols, size_t rows)
 
 uint32_t solar_os_map_scale_step(uint32_t meters_per_col, int direction)
 {
-    const size_t count = solar_os_map_scale_count();
+    const size_t count = map_scale_count();
     if (direction > 0) {
         for (size_t i = 0U; i < count; i++) {
             if (map_scales[i] > meters_per_col) {
@@ -348,29 +353,7 @@ uint32_t solar_os_map_scale_step(uint32_t meters_per_col, int direction)
     return meters_per_col;
 }
 
-size_t solar_os_map_scale_count(void)
-{
-    return sizeof(map_scales) / sizeof(map_scales[0]);
-}
-
-uint32_t solar_os_map_scale_meters_per_col(size_t index)
-{
-    const size_t count = solar_os_map_scale_count();
-    return map_scales[index < count ? index : count - 1U];
-}
-
-size_t solar_os_map_scale_index(uint32_t meters_per_col)
-{
-    size_t best = 0U;
-    for (size_t i = 0U; i < solar_os_map_scale_count(); i++) {
-        if (map_scales[i] <= meters_per_col) {
-            best = i;
-        }
-    }
-    return best;
-}
-
-size_t solar_os_map_fit_scale(const int32_t *lat_e7,
+uint32_t solar_os_map_fit_scale(const int32_t *lat_e7,
                               const int32_t *lon_e7,
                               size_t count,
                               int32_t center_lat_e7,
@@ -384,17 +367,17 @@ size_t solar_os_map_fit_scale(const int32_t *lat_e7,
         .cols = cols,
         .rows = rows,
     };
-    for (size_t scale = 0U; scale < solar_os_map_scale_count(); scale++) {
+    for (size_t scale = 0U; scale < map_scale_count(); scale++) {
         view.meters_per_col = map_scales[scale];
         bool all = true;
         for (size_t i = 0U; i < count && all; i++) {
             all = solar_os_map_project(&view, lat_e7[i], lon_e7[i], NULL, NULL);
         }
         if (all) {
-            return scale;
+            return view.meters_per_col;
         }
     }
-    return solar_os_map_scale_count() - 1U;
+    return map_scales[map_scale_count() - 1U];
 }
 
 void solar_os_map_format_coord(int32_t lat_e7,

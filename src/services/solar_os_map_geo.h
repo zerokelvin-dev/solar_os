@@ -100,12 +100,14 @@ bool solar_os_map_project(const solar_os_map_view_t *view,
 uint32_t solar_os_map_world_scale(size_t cols, size_t rows);
 uint32_t solar_os_map_scale_step(uint32_t meters_per_col, int direction);
 
-size_t solar_os_map_scale_count(void);
-uint32_t solar_os_map_scale_meters_per_col(size_t index);
-/* Index of the largest scale not exceeding meters_per_col (clamped). */
-size_t solar_os_map_scale_index(uint32_t meters_per_col);
-/* Smallest scale at which every coordinate fits the view around its centre. */
-size_t solar_os_map_fit_scale(const int32_t *lat_e7,
+/*
+ * Metres per pixel of the smallest scale at which every coordinate fits the
+ * view around its centre. The ladder itself stays inside this file: a scale
+ * handed out as a position in it was read back as a scale by anything that
+ * forgot to convert, and one metre per pixel is what an unconverted zero
+ * means.
+ */
+uint32_t solar_os_map_fit_scale(const int32_t *lat_e7,
                               const int32_t *lon_e7,
                               size_t count,
                               int32_t center_lat_e7,
