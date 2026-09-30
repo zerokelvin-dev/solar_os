@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
+import statistics
 import struct
 import sys
 import time
@@ -128,11 +130,33 @@ def simplify(ring: list[tuple[int, int]], tolerance: int) -> list[tuple[int, int
     return kept
 
 
+def resolution(entries: list[tuple[list[tuple[int, int]], bool, int]]) -> int:
+    """Median distance between neighbouring vertices, in hundreds of metres.
+
+    A renderer zoomed in past this knows the outline is no longer placed
+    that precisely and can stop drawing it. Survey-grade OSM geometry
+    rounds to zero here, which means no limit.
+    """
+    spans = []
+    for ring, _, _ in entries:
+        for (lat_a, lon_a), (lat_b, lon_b) in zip(ring, ring[1:]):
+            d_lat = (lat_b - lat_a) / E7 * 111320.0
+            d_lon = ((lon_b - lon_a) / E7 * 111320.0 *
+                     math.cos(math.radians((lat_a + lat_b) / 2.0 / E7)))
+            span = math.hypot(d_lat, d_lon)
+            if span > 0.0:
+                spans.append(span)
+    if not spans:
+        return 0
+    return min(65535, round(statistics.median(spans) / 100.0))
+
+
 def pack(entries: list[tuple[list[tuple[int, int]], bool, int]]) -> bytes:
     points = sum(len(ring) for ring, _, _ in entries)
     out = bytearray()
     out += MAGIC
-    out += struct.pack("<HHII", VERSION, 0, len(entries), points)
+    out += struct.pack("<HHII", VERSION, resolution(entries),
+                       len(entries), points)
     for ring, is_open, klass in entries:
         if len(ring) > 0xFFFFFF:
             raise SystemExit("a ring longer than 16 million points")

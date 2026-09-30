@@ -18,6 +18,11 @@
  *
  * Layout: header, then a count per ring, then bounds per ring as four
  * coordinates, then the coordinates themselves.
+ *
+ * The header carries the layer's resolution, in hundreds of metres: the
+ * typical distance between two of its vertices. A renderer zoomed in far
+ * past it knows the shape it holds is no longer telling the truth there.
+ * Zero means no limit, for geometry surveyed finer than it is ever drawn.
  */
 #define SOLAR_OS_MAP_LAYER_MAGIC "SOMB"
 #define SOLAR_OS_MAP_LAYER_VERSION 2U
@@ -49,6 +54,8 @@ typedef struct {
     size_t size;
     uint32_t ring_count;
     uint32_t point_count;
+    /* Typical spacing between vertices, in metres; zero means no limit. */
+    uint32_t resolution_m;
 } solar_os_map_geometry_t;
 
 typedef struct {

@@ -36,6 +36,7 @@ esp_err_t solar_os_map_geometry_parse(const uint8_t *data,
     if (version != SOLAR_OS_MAP_LAYER_VERSION) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+    const uint32_t resolution = (uint32_t)(data[6] | (data[7] << 8)) * 100U;
     const uint32_t rings = read_u32(&data[8]);
     const uint32_t points = read_u32(&data[12]);
     const size_t expected = SOLAR_OS_MAP_LAYER_HEADER +
@@ -57,6 +58,7 @@ esp_err_t solar_os_map_geometry_parse(const uint8_t *data,
     if (counted != points) {
         return ESP_ERR_INVALID_SIZE;
     }
+    geometry->resolution_m = resolution;
     geometry->data = data;
     geometry->size = size;
     geometry->ring_count = rings;

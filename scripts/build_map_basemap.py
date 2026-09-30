@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
+import statistics
 import struct
 import sys
 import urllib.request
@@ -80,11 +82,32 @@ def simplify(ring: list[tuple[int, int]], tolerance: int) -> list[tuple[int, int
     return kept if len(kept) >= 3 else ring
 
 
+def resolution(ring_list: list[tuple[int, list[tuple[int, int]]]]) -> int:
+    """Median distance between neighbouring vertices, in hundreds of metres.
+
+    A renderer zoomed in past this is looking at a shape the source never
+    claimed to place that precisely, so it can stop believing the outline.
+    """
+    spans = []
+    for _, ring in ring_list:
+        for (lat_a, lon_a), (lat_b, lon_b) in zip(ring, ring[1:]):
+            d_lat = (lat_b - lat_a) / E7 * 111320.0
+            d_lon = ((lon_b - lon_a) / E7 * 111320.0 *
+                     math.cos(math.radians((lat_a + lat_b) / 2.0 / E7)))
+            span = math.hypot(d_lat, d_lon)
+            if span > 0.0:
+                spans.append(span)
+    if not spans:
+        return 0
+    return min(65535, round(statistics.median(spans) / 100.0))
+
+
 def pack(ring_list: list[tuple[int, list[tuple[int, int]]]]) -> bytes:
     points = sum(len(ring) for _, ring in ring_list)
     out = bytearray()
     out += MAGIC
-    out += struct.pack("<HHII", VERSION, 0, len(ring_list), points)
+    out += struct.pack("<HHII", VERSION, resolution(ring_list),
+                       len(ring_list), points)
     for klass, ring in ring_list:
         out += struct.pack("<I", len(ring) | (klass << CLASS_SHIFT))
     for _, ring in ring_list:

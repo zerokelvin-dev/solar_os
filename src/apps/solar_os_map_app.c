@@ -331,6 +331,46 @@ static void map_app_fill_ring(solar_os_gfx_t *gfx,
 }
 
 /*
+ * Whether any of a ring's segments runs through the view, tested on the
+ * stored coordinates so that a vertex far outside, whose projection is
+ * clamped, cannot make an edge look as though it crosses the screen.
+ */
+static bool map_app_ring_edge_in_view(const solar_os_map_ring_t *ring,
+                                      const solar_os_map_view_t *view,
+                                      int32_t lat_min,
+                                      int32_t lat_max,
+                                      int32_t lon_half)
+{
+    const size_t segments = ring->open ? ring->point_count - 1U
+                                       : ring->point_count;
+    for (size_t point = 0U; point < segments; point++) {
+        const size_t next = (point + 1U) % ring->point_count;
+        const int32_t lat_a = ring->coordinates[point * 2U];
+        const int32_t lat_b = ring->coordinates[next * 2U];
+        if ((lat_a < lat_min && lat_b < lat_min) ||
+            (lat_a > lat_max && lat_b > lat_max)) {
+            continue;
+        }
+        const int32_t lon_a =
+            solar_os_map_relative_lon(view, ring->coordinates[point * 2U + 1U]);
+        const int32_t lon_b =
+            solar_os_map_relative_lon(view, ring->coordinates[next * 2U + 1U]);
+        /* A segment crossing the far meridian arrives inverted, and one of
+         * its halves reaches the view from either side. */
+        const int64_t d_lon = (int64_t)lon_b - (int64_t)lon_a;
+        if (d_lon > SOLAR_OS_MAP_LON_MAX_E7 || d_lon < -SOLAR_OS_MAP_LON_MAX_E7) {
+            return true;
+        }
+        if ((lon_a < -lon_half && lon_b < -lon_half) ||
+            (lon_a > lon_half && lon_b > lon_half)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+/*
  * Geometry is drawn from rings of coordinates, so it needs no tiles. Two
  * things are thrown away before any of it reaches the screen, because a
  * layer holding a whole city is tens of thousands of segments and most of
@@ -357,6 +397,22 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
     solar_os_map_view_bounds(view, &lat_min, &lat_max, &lon_half);
     const int32_t step = MAP_APP_DETAIL_PX * solar_os_map_view_pixel_e7(view);
     const int span = (int)view->cols;
+    /*
+     * A layer knows how far apart its vertices sit. Once the screen is
+     * narrower than a single one of those, an outline crossing it is not a
+     * coastline, it is one straight segment that happens to land here: at
+     * 1:110m Lake Ontario is seventeen points for three hundred kilometres,
+     * so zoomed into Toronto its shore fell across downtown. Below that the
+     * layer's boundaries stop being drawn.
+     *
+     * A ring whose boundary stays off the screen still tells the truth,
+     * because being inside it does not depend on where its edge runs, so
+     * the continent underneath keeps filling and only the lake goes.
+     */
+    const uint64_t view_span_m =
+        (uint64_t)view->cols * (uint64_t)view->meters_per_col;
+    const bool coarse = geometry->resolution_m > 0U &&
+                        view_span_m < (uint64_t)geometry->resolution_m;
 
     solar_os_map_ring_cursor_t cursor = {0};
     solar_os_map_ring_t ring;
@@ -381,6 +437,12 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
         if (!ring.open &&
             ring.lat_max - ring.lat_min < step &&
             ring.lon_max - ring.lon_min < step) {
+            continue;
+        }
+        /* Too coarse to place an edge here: drop the ring if one of its
+         * segments would cross the view, keep it if they all stay away. */
+        if (coarse && map_app_ring_edge_in_view(&ring, view, lat_min, lat_max,
+                                                lon_half)) {
             continue;
         }
 
@@ -419,17 +481,17 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
         }
 
         /*
-         * A segment wider than the view is one whose ends were clamped, or
-         * one crossing the meridian opposite the view centre, where
-         * longitude wraps. Either way it would draw a line straight across
-         * the map, so it is left out.
-         */
-        /*
          * Only a jump across the meridian opposite the view centre makes a
          * ring unfillable. A segment merely wider than the screen is what
          * every coastline looks like once you have zoomed into it, and
          * treating that as a wrap left a continent unfilled and the whole
          * view the colour of the sea.
+         */
+        /*
+         * A segment wider than the view is one whose ends were clamped, or
+         * one crossing the meridian opposite the view centre, where
+         * longitude wraps. Either way it would draw a line straight across
+         * the map, so it is left out.
          */
         bool wraps = false;
         for (size_t point = 0U; point + 1U < kept && !wraps; point++) {
