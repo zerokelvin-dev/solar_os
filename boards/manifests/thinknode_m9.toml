@@ -47,13 +47,18 @@ SOLAR_OS_BOARD_DISPLAY_CONTROLLER_ST7789 = "1"
 SOLAR_OS_BOARD_DISPLAY_DRIVER_NAME = '"st7789"'
 SOLAR_OS_BOARD_DISPLAY_WIDTH = "320"
 SOLAR_OS_BOARD_DISPLAY_HEIGHT = "240"
-# The panel is a portrait 240x320 ST7789. MADCTL 0xB8 (MV|MY|ML|BGR) is
-# LovyanGFX rotation 3 with BGR order, so the controller's address window is
-# landscape after rotation and transfers use the post-rotation geometry.
+# The panel is a portrait 240x320 ST7789. MADCTL 0xB0 (MV|MY|ML) is
+# LovyanGFX rotation 3, so the controller's address window is landscape after
+# rotation and transfers use the post-rotation geometry.
+#
+# The BGR bit is deliberately clear. SolarOS packs a pixel red first, so
+# setting it told the controller to read our red as blue: on this panel a
+# brown road drew blue and blue water drew orange. Nothing showed it until
+# the map drew something other than grey, because grey survives the swap.
 SOLAR_OS_BOARD_DISPLAY_NATIVE_WIDTH = "320"
 SOLAR_OS_BOARD_DISPLAY_NATIVE_HEIGHT = "240"
 SOLAR_OS_BOARD_DISPLAY_SPI_CLOCK_HZ = "40000000"
-SOLAR_OS_BOARD_DISPLAY_MADCTL = "0xB8"
+SOLAR_OS_BOARD_DISPLAY_MADCTL = "0xB0"
 SOLAR_OS_BOARD_DISPLAY_INVERT_COLOR = "1"
 SOLAR_OS_BOARD_DISPLAY_U8G2_ROTATION = "U8G2_R0"
 SOLAR_OS_BOARD_PIN_LCD_CS = "GPIO_NUM_16"
