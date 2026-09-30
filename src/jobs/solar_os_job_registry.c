@@ -55,6 +55,9 @@
 #if SOLAR_OS_PACKAGE_JOB_MESHCORE
 #include "solar_os_meshcore_job.h"
 #endif
+#if SOLAR_OS_PACKAGE_JOB_RETICULUM
+#include "solar_os_reticulum_job.h"
+#endif
 #if SOLAR_OS_PACKAGE_JOB_NTP_SYNC
 #include "solar_os_ntp_sync_job.h"
 #endif
@@ -137,6 +140,9 @@ static const solar_os_job_registry_entry_t registered_jobs[] = {
 #endif
 #if SOLAR_OS_PACKAGE_JOB_MESHCORE
     {"meshcore", "MeshCore secure radio messaging", &solar_os_meshcore_job},
+#endif
+#if SOLAR_OS_PACKAGE_JOB_RETICULUM
+    {"reticulum", "Reticulum network stack over TCP", &solar_os_reticulum_job},
 #endif
 #if SOLAR_OS_PACKAGE_JOB_NTP_SYNC
     {"ntp-sync", "periodic RTC NTP sync", &solar_os_ntp_sync_job},

@@ -71,6 +71,7 @@ espnow = true
 pocsag = true
 radio_link = true
 meshcore = true
+reticulum = true
 audio_commands = true
 speech = true
 player = true

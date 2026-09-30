@@ -55,6 +55,10 @@ static bool messages_parse_provider(
         *provider = SOLAR_OS_MESSAGING_PROVIDER_LINK;
         return true;
     }
+    if (strcmp(text, "reticulum") == 0) {
+        *provider = SOLAR_OS_MESSAGING_PROVIDER_RETICULUM;
+        return true;
+    }
     return false;
 }
 
@@ -125,7 +129,7 @@ static void messages_status(solar_os_shell_io_t *io)
     }
     for (solar_os_messaging_provider_id_t provider =
              SOLAR_OS_MESSAGING_PROVIDER_GATEWAY;
-         provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK;
+         provider <= SOLAR_OS_MESSAGING_PROVIDER_RETICULUM;
          provider++) {
         solar_os_messaging_provider_status_t provider_status;
         if (solar_os_messaging_provider_get_status(provider,

@@ -846,6 +846,34 @@ ownership. MeshCore and `radio-link` therefore report normal ownership
 conflicts when pointed at the same radio. See [meshcore.md](meshcore.md) for
 identity, trust, channel, regional-profile, and security details.
 
+## reticulum
+
+Reticulum network stack over a TCP connection to an existing Reticulum node.
+
+Usage:
+
+```text
+job start reticulum <host> [port]
+job stop reticulum
+job status reticulum
+reticulum status
+```
+
+Example:
+
+```text
+job start reticulum rns.example.net 4242
+reticulum announce
+reticulum announces
+```
+
+The job requires PSRAM, an SD-protocol storage volume, and Wi-Fi. It connects
+to a Reticulum `TCPServerInterface` (default port 4242), reconnects with
+backoff, and runs the protocol loop on a 12288-byte internal worker stack whose
+minimum watermark is reported by `reticulum status`. See
+[reticulum.md](reticulum.md) for identity, storage, and interoperability
+details.
+
 ## espnow-link
 
 ESP-NOW adapter for the transport-independent SolarOS Link service.
