@@ -1003,16 +1003,20 @@ static bool gfx_clip_segment(int *x0, int *y0, int *x1, int *y1,
         int y = 0;
         if ((out & 8) != 0) {
             y = height - 1;
-            x = *x0 + (int)(((int64_t)(*x1 - *x0) * (y - *y0)) / (*y1 - *y0));
+            x = *x0 + (int)((((int64_t)*x1 - *x0) * ((int64_t)y - *y0)) /
+                            ((int64_t)*y1 - *y0));
         } else if ((out & 4) != 0) {
             y = 0;
-            x = *x0 + (int)(((int64_t)(*x1 - *x0) * (y - *y0)) / (*y1 - *y0));
+            x = *x0 + (int)((((int64_t)*x1 - *x0) * ((int64_t)y - *y0)) /
+                            ((int64_t)*y1 - *y0));
         } else if ((out & 2) != 0) {
             x = width - 1;
-            y = *y0 + (int)(((int64_t)(*y1 - *y0) * (x - *x0)) / (*x1 - *x0));
+            y = *y0 + (int)((((int64_t)*y1 - *y0) * ((int64_t)x - *x0)) /
+                            ((int64_t)*x1 - *x0));
         } else {
             x = 0;
-            y = *y0 + (int)(((int64_t)(*y1 - *y0) * (x - *x0)) / (*x1 - *x0));
+            y = *y0 + (int)((((int64_t)*y1 - *y0) * ((int64_t)x - *x0)) /
+                            ((int64_t)*x1 - *x0));
         }
         if (out == a) {
             *x0 = x;
