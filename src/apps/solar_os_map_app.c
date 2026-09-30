@@ -38,6 +38,7 @@ typedef struct {
     size_t path_count;
     map_app_vertex_t *scratch;
     int *crossings;
+    int *edges;
     size_t scratch_max;
     size_t count;
     size_t total;
@@ -239,15 +240,23 @@ static void map_app_size_scratch(void)
                                sizeof(*crossings),
                                SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
                                "app.map.fill");
-    if (grown == NULL || crossings == NULL) {
+    int *edges =
+        solar_os_memory_calloc(longest,
+                               sizeof(*edges),
+                               SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+                               "app.map.edges");
+    if (grown == NULL || crossings == NULL || edges == NULL) {
         solar_os_memory_free(grown);
         solar_os_memory_free(crossings);
+        solar_os_memory_free(edges);
         return;
     }
     solar_os_memory_free(map_app.scratch);
     solar_os_memory_free(map_app.crossings);
+    solar_os_memory_free(map_app.edges);
     map_app.scratch = grown;
     map_app.crossings = crossings;
+    map_app.edges = edges;
     map_app.scratch_max = longest;
 }
 
@@ -262,7 +271,7 @@ static void map_app_fill_ring(solar_os_gfx_t *gfx,
                               int bottom,
                               int height)
 {
-    if (map_app.crossings == NULL || count < 3U) {
+    if (map_app.crossings == NULL || map_app.edges == NULL || count < 3U) {
         return;
     }
     if (top < MAP_APP_HEADER_H) {
@@ -271,9 +280,26 @@ static void map_app_fill_ring(solar_os_gfx_t *gfx,
     if (bottom > MAP_APP_HEADER_H + height) {
         bottom = MAP_APP_HEADER_H + height;
     }
+    /*
+     * Only the edges that cross the visible rows can contribute a crossing,
+     * and once a coastline is zoomed into, almost none of them do. Finding
+     * them once beats rediscovering it on every row: a continent at city
+     * zoom is thousands of edges and a handful that matter.
+     */
+    size_t edge_count = 0U;
+    for (size_t i = 0U; i < count; i++) {
+        const int ay = map_app.scratch[i].y;
+        const int by = map_app.scratch[(i + 1U) % count].y;
+        const int low = ay < by ? ay : by;
+        const int high = ay < by ? by : ay;
+        if (high > top && low < bottom) {
+            map_app.edges[edge_count++] = (int)i;
+        }
+    }
     for (int row = top; row < bottom; row++) {
         size_t found = 0U;
-        for (size_t i = 0U; i < count && found < count; i++) {
+        for (size_t e = 0U; e < edge_count && found < count; e++) {
+            const size_t i = (size_t)map_app.edges[e];
             const map_app_vertex_t *a = &map_app.scratch[i];
             const map_app_vertex_t *b = &map_app.scratch[(i + 1U) % count];
             if ((a->y <= row && b->y > row) || (b->y <= row && a->y > row)) {
@@ -398,15 +424,20 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
          * longitude wraps. Either way it would draw a line straight across
          * the map, so it is left out.
          */
+        /*
+         * Only a jump across the meridian opposite the view centre makes a
+         * ring unfillable. A segment merely wider than the screen is what
+         * every coastline looks like once you have zoomed into it, and
+         * treating that as a wrap left a continent unfilled and the whole
+         * view the colour of the sea.
+         */
         bool wraps = false;
         for (size_t point = 0U; point + 1U < kept && !wraps; point++) {
             const int64_t d_lon =
                 (int64_t)map_app.scratch[point + 1U].relative_lon -
                 (int64_t)map_app.scratch[point].relative_lon;
             wraps = d_lon > SOLAR_OS_MAP_LON_MAX_E7 ||
-                    d_lon < -SOLAR_OS_MAP_LON_MAX_E7 ||
-                    map_app.scratch[point + 1U].x - map_app.scratch[point].x > span ||
-                    map_app.scratch[point].x - map_app.scratch[point + 1U].x > span;
+                    d_lon < -SOLAR_OS_MAP_LON_MAX_E7;
         }
         const size_t segments = ring.open ? kept - 1U : kept;
         solar_os_gfx_set_color(gfx, map_app_class_color(gfx, ring.klass));

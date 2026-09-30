@@ -978,6 +978,22 @@ void solar_os_gfx_line(solar_os_gfx_t *gfx, int x0, int y0, int x1, int y1)
     int err = dx + dy;
     unsigned step = 0;
 
+    /*
+     * On an indexed surface a pixel is one byte at a known offset, so the
+     * run is written here rather than through the clipped horizontal-run
+     * helper once per pixel. A map draws tens of thousands of short
+     * segments in a frame, where that per-pixel call was most of the cost,
+     * and one dirty rectangle for the whole line serves as well as one per
+     * pixel.
+     */
+    const bool direct = gfx_uses_index8(gfx);
+    const int width = direct ? (int)gfx->index8->surface.width : 0;
+    const int height = direct ? (int)gfx->index8->surface.height : 0;
+    int touched_left = x0 < x1 ? x0 : x1;
+    int touched_right = x0 < x1 ? x1 : x0;
+    int touched_top = y0 < y1 ? y0 : y1;
+    int touched_bottom = y0 < y1 ? y1 : y0;
+
     while (true) {
         bool draw = true;
         switch (gfx->line_style) {
@@ -993,7 +1009,14 @@ void solar_os_gfx_line(solar_os_gfx_t *gfx, int x0, int y0, int x1, int y1)
             break;
         }
         if (draw) {
-            gfx_draw_hline_shade_clipped(gfx, x0, y0, 1);
+            if (direct) {
+                if (x0 >= 0 && y0 >= 0 && x0 < width && y0 < height) {
+                    gfx->index8->pixels[(size_t)y0 * gfx->index8->surface.stride +
+                                        (size_t)x0] = gfx->index8->draw_index;
+                }
+            } else {
+                gfx_draw_hline_shade_clipped(gfx, x0, y0, 1);
+            }
         }
         if (x0 == x1 && y0 == y1) {
             break;
@@ -1007,6 +1030,25 @@ void solar_os_gfx_line(solar_os_gfx_t *gfx, int x0, int y0, int x1, int y1)
         if (e2 <= dx) {
             err += dx;
             y0 += sy;
+        }
+    }
+    if (direct) {
+        if (touched_left < 0) {
+            touched_left = 0;
+        }
+        if (touched_top < 0) {
+            touched_top = 0;
+        }
+        if (touched_right >= width) {
+            touched_right = width - 1;
+        }
+        if (touched_bottom >= height) {
+            touched_bottom = height - 1;
+        }
+        if (touched_right >= touched_left && touched_bottom >= touched_top) {
+            gfx_mark_index8_dirty_rect(gfx, touched_left, touched_top,
+                                       touched_right - touched_left + 1,
+                                       touched_bottom - touched_top + 1);
         }
     }
     gfx_mark_dirty(gfx);

@@ -160,6 +160,66 @@ void solar_os_map_view_bounds(const solar_os_map_view_t *view,
     }
 }
 
+/*
+ * The world size and the centre's Mercator position depend only on the
+ * view, but projecting a layer calls this once per vertex and a city is
+ * tens of thousands of them. They are remembered for the view last seen,
+ * which is the same view for the whole of a frame. One renderer draws at a
+ * time, so the worst a second caller could cause is a recomputation.
+ */
+static struct {
+    int32_t center_lat_e7;
+    uint32_t meters_per_col;
+    float world_px;
+    float center_merc;
+    float merc_per_degree;
+    bool linear;
+    bool valid;
+} map_projection_cache;
+
+static float map_projection_merc(const solar_os_map_view_t *view, int32_t lat_e7)
+{
+    if (map_projection_cache.linear) {
+        return map_projection_cache.center_merc +
+               (float)(lat_e7 - view->center_lat_e7) / (float)MAP_E7 *
+                   map_projection_cache.merc_per_degree;
+    }
+    return map_mercator_y(lat_e7);
+}
+
+static void map_projection_constants(const solar_os_map_view_t *view,
+                                     float *world_px,
+                                     float *center_merc)
+{
+    if (!map_projection_cache.valid ||
+        map_projection_cache.center_lat_e7 != view->center_lat_e7 ||
+        map_projection_cache.meters_per_col != view->meters_per_col) {
+        map_projection_cache.center_lat_e7 = view->center_lat_e7;
+        map_projection_cache.meters_per_col = view->meters_per_col;
+        map_projection_cache.world_px = map_world_px(view);
+        map_projection_cache.center_merc = map_mercator_y(view->center_lat_e7);
+        /*
+         * Mercator's latitude term costs a tangent and a logarithm, which
+         * is most of the work in projecting a city: thousands of vertices
+         * spanning a fraction of a degree. Over a span that small the curve
+         * is a straight line to well under a pixel, so close in it is
+         * walked by its slope, which is the secant of the latitude. Zoomed
+         * out, where the span is degrees and the curve is a curve, it is
+         * computed properly.
+         */
+        const float visible_degrees =
+            (float)view->rows * 360.0F / map_projection_cache.world_px;
+        const float center_lat =
+            (float)view->center_lat_e7 / (float)MAP_E7;
+        map_projection_cache.linear = visible_degrees < 2.0F;
+        map_projection_cache.merc_per_degree =
+            (float)MAP_DEG_TO_RAD / cosf(center_lat * (float)MAP_DEG_TO_RAD);
+        map_projection_cache.valid = true;
+    }
+    *world_px = map_projection_cache.world_px;
+    *center_merc = map_projection_cache.center_merc;
+}
+
 void solar_os_map_project_raw(const solar_os_map_view_t *view,
                               int32_t lat_e7,
                               int32_t lon_e7,
@@ -169,13 +229,15 @@ void solar_os_map_project_raw(const solar_os_map_view_t *view,
     if (view == NULL || view->meters_per_col == 0U) {
         return;
     }
-    const float world = map_world_px(view);
+    float world = 0.0F;
+    float center_merc = 0.0F;
+    map_projection_constants(view, &world, &center_merc);
     const float d_lon =
         (float)solar_os_map_relative_lon(view, lon_e7) / (float)MAP_E7;
     float c = (float)(view->cols / 2U) + world * d_lon / 360.0F;
     float r = (float)(view->rows / 2U) +
-              world * (map_mercator_y(view->center_lat_e7) -
-                       map_mercator_y(lat_e7)) / (float)(2.0 * MAP_PI);
+              world * (center_merc - map_projection_merc(view, lat_e7)) /
+                  (float)(2.0 * MAP_PI);
     if (c > MAP_PROJECT_LIMIT) {
         c = MAP_PROJECT_LIMIT;
     } else if (c < -MAP_PROJECT_LIMIT) {
