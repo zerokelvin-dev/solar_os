@@ -231,8 +231,10 @@ static void map_app_format_age(uint32_t updated_ms, char *text, size_t text_len)
  */
 static void map_app_size_scratch(void)
 {
-    const size_t longest = solar_os_map_layer_longest_ring();
-    if (longest == 0U || longest <= map_app.scratch_max) {
+    /* Two spare vertices, so a ring that goes round a pole has room for
+     * the two points that close it along one. */
+    const size_t longest = solar_os_map_layer_longest_ring() + 2U;
+    if (longest <= 2U || longest <= map_app.scratch_max) {
         return;
     }
     map_app_vertex_t *grown =
@@ -504,6 +506,9 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
         int32_t last_lat = 0;
         int32_t last_lon = 0;
         int64_t relative = 0;
+        int64_t relative_first = 0;
+        /* Where the ring has come the whole way round, if it does. */
+        size_t full_turn = 0U;
         for (size_t point = 0U; point < ring.point_count; point++) {
             const int32_t lat = ring.coordinates[point * 2U];
             const int32_t lon = ring.coordinates[point * 2U + 1U];
@@ -531,9 +536,16 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
              */
             if (kept == 0U) {
                 relative = (int64_t)solar_os_map_relative_lon(view, lon);
+                relative_first = relative;
             } else {
                 relative +=
                     (int64_t)solar_os_map_relative_lon_delta(last_lon, lon);
+                const int64_t gone = relative - relative_first;
+                if (full_turn == 0U &&
+                    (gone > (int64_t)SOLAR_OS_MAP_LON_MAX_E7 * 2 ||
+                     gone < -((int64_t)SOLAR_OS_MAP_LON_MAX_E7 * 2))) {
+                    full_turn = kept;
+                }
             }
             int x = 0;
             int y = 0;
@@ -546,6 +558,52 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
         }
         if (kept < 2U) {
             continue;
+        }
+        /*
+         * A ring that comes back a whole turn from where it started has
+         * gone round a pole rather than round an area: Antarctica travels
+         * 361 degrees, and its first and last points are a degree apart on
+         * the globe but a full turn apart once longitude is carried. Joining
+         * those two directly draws a chord the width of the world, and a
+         * scanline fill reads it as an edge crossing every row, which
+         * striped the bottom of the map in land and sea.
+         *
+         * Closing it through the pole instead is what the shape means: down
+         * to the pole, along it, and back. Mercator puts the pole far below
+         * any screen, so the fill simply runs off the bottom, which is what
+         * standing on Antarctica looks like.
+         */
+        const int64_t turn = (int64_t)SOLAR_OS_MAP_LON_MAX_E7 * 2;
+        const int64_t travelled = relative - relative_first;
+        if (!ring.open && full_turn >= 3U && kept + 2U <= map_app.scratch_max) {
+            /*
+             * Natural Earth's Antarctica comes round 361 degrees, not 360:
+             * the last degree retraces the first. Kept, a scanline crosses
+             * that strip twice and the even-odd rule leaves a slit down it,
+             * so the ring is cut where it finished its one turn.
+             */
+            kept = full_turn;
+            const int64_t closing =
+                travelled > 0 ? relative_first + turn : relative_first - turn;
+            /*
+             * The closing edge runs off the screen rather than to the pole
+             * itself. Mercator never reaches a pole, so it is clamped at
+             * 85 degrees, and zoomed out that clamp lands inside the view:
+             * closing there left a strip of sea along the bottom of the
+             * world below Antarctica.
+             */
+            const int edge = ring.lat_min + ring.lat_max < 0
+                                 ? MAP_APP_HEADER_H + (int)view->rows + 4
+                                 : MAP_APP_HEADER_H - 4;
+            int x = 0;
+            solar_os_map_project_rel(view, 0, closing, &x, NULL);
+            map_app.scratch[kept].x = x;
+            map_app.scratch[kept].y = edge;
+            kept++;
+            solar_os_map_project_rel(view, 0, relative_first, &x, NULL);
+            map_app.scratch[kept].x = x;
+            map_app.scratch[kept].y = edge;
+            kept++;
         }
 
         const size_t segments = ring.open ? kept - 1U : kept;
