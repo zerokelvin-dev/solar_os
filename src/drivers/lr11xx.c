@@ -909,6 +909,35 @@ esp_err_t lr11xx_configure(lr11xx_t *dev, const solar_os_radio_config_t *config)
     return err;
 }
 
+/*
+ * The payload length is part of the packet parameters, and the part reads
+ * it two ways: as the length to transmit, and as the longest packet it will
+ * accept while listening. A transmit therefore has to re-send it for its own
+ * payload, and a receive has to put the maximum back, or a radio that has
+ * just sent a short packet is deaf to any longer one.
+ */
+static esp_err_t lr11xx_set_packet_length(lr11xx_t *dev, uint8_t payload_len)
+{
+    if (lr11xx_is_lora(&dev->config)) {
+        uint8_t params[6];
+        lr11xx_encode_lora_packet(&dev->config, payload_len, params);
+        return lr11xx_command(dev, LR11XX_OP_SET_PACKET_PARAMS, params, sizeof(params));
+    }
+    const uint16_t preamble_bits = (uint16_t)((dev->config.preamble_len != 0U
+                                               ? dev->config.preamble_len : 8U) * 8U);
+    const uint8_t sync_bits = (uint8_t)((dev->config.sync_word_len != 0U
+                                         ? dev->config.sync_word_len : 1U) * 8U);
+    const uint8_t params[9] = {
+        (uint8_t)(preamble_bits >> 8), (uint8_t)(preamble_bits & 0xFFU),
+        0x04U, sync_bits, 0x00U,
+        dev->config.variable_length ? 0x01U : 0x00U,
+        payload_len,
+        dev->config.crc_enabled ? 0x02U : 0x01U,
+        0x00U,
+    };
+    return lr11xx_command(dev, LR11XX_OP_SET_PACKET_PARAMS, params, sizeof(params));
+}
+
 esp_err_t lr11xx_set_state(lr11xx_t *dev, solar_os_radio_state_t state)
 {
     if (dev == NULL) {
@@ -939,8 +968,14 @@ esp_err_t lr11xx_set_state(lr11xx_t *dev, solar_os_radio_state_t state)
             err = lr11xx_set_standby(dev);
             break;
         case SOLAR_OS_RADIO_STATE_RX: {
-            const uint8_t params[3] = {0xFFU, 0xFFU, 0xFFU}; /* continuous */
-            err = lr11xx_command(dev, LR11XX_OP_SET_RX, params, sizeof(params));
+            err = lr11xx_set_packet_length(
+                dev, (uint8_t)(dev->config.payload_length != 0U
+                                   ? dev->config.payload_length
+                                   : LR11XX_MAX_PACKET_LEN));
+            if (err == ESP_OK) {
+                const uint8_t params[3] = {0xFFU, 0xFFU, 0xFFU}; /* continuous */
+                err = lr11xx_command(dev, LR11XX_OP_SET_RX, params, sizeof(params));
+            }
             break;
         }
         case SOLAR_OS_RADIO_STATE_TX: {
@@ -1025,30 +1060,8 @@ esp_err_t lr11xx_send(lr11xx_t *dev, const solar_os_radio_packet_t *packet, uint
         err = lr11xx_wake(dev);
     }
 
-    const bool lora = lr11xx_is_lora(&dev->config);
-    const uint8_t payload_len = (uint8_t)packet->len;
     if (err == ESP_OK) {
-        /* The packet length is part of the packet parameters, so it has to be
-         * re-sent for every payload of a different size. */
-        if (lora) {
-            uint8_t params[6];
-            lr11xx_encode_lora_packet(&dev->config, payload_len, params);
-            err = lr11xx_command(dev, LR11XX_OP_SET_PACKET_PARAMS, params, sizeof(params));
-        } else {
-            const uint16_t preamble_bits = (uint16_t)((dev->config.preamble_len != 0U
-                                                       ? dev->config.preamble_len : 8U) * 8U);
-            const uint8_t sync_bits = (uint8_t)((dev->config.sync_word_len != 0U
-                                                 ? dev->config.sync_word_len : 1U) * 8U);
-            const uint8_t params[9] = {
-                (uint8_t)(preamble_bits >> 8), (uint8_t)(preamble_bits & 0xFFU),
-                0x04U, sync_bits, 0x00U,
-                dev->config.variable_length ? 0x01U : 0x00U,
-                payload_len,
-                dev->config.crc_enabled ? 0x02U : 0x01U,
-                0x00U,
-            };
-            err = lr11xx_command(dev, LR11XX_OP_SET_PACKET_PARAMS, params, sizeof(params));
-        }
+        err = lr11xx_set_packet_length(dev, (uint8_t)packet->len);
     }
     if (err == ESP_OK) {
         err = lr11xx_clear_irq(dev, LR11XX_IRQ_ALL);

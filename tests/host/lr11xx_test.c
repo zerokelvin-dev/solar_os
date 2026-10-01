@@ -634,6 +634,40 @@ static void test_send_writes_the_payload_without_an_offset(void)
     assert(lr11xx_send(&dev, &bad, 10U) == ESP_ERR_INVALID_ARG);
 }
 
+/*
+ * The packet length the part is given for a transmit is also the longest
+ * packet it will accept while listening. After a short send, entering
+ * receive has to put the maximum back, or the radio is deaf to anything
+ * longer than the last thing it said - which on the bench was every
+ * announce from the peer after the M9's own.
+ */
+static void test_listening_after_a_short_send_accepts_the_longest_packet(void)
+{
+    lr11xx_t dev;
+    reset_chip();
+    assert(open_device(&dev, 0) == ESP_OK);
+    const solar_os_radio_config_t config = lora_config();
+    assert(lr11xx_configure(&dev, &config) == ESP_OK);
+    chip.irq = IRQ_TX_DONE;
+    solar_os_radio_packet_t packet = {0};
+    packet.len = 5U;
+    assert(lr11xx_send(&dev, &packet, 100U) == ESP_OK);
+
+    const size_t before = chip.count;
+    assert(lr11xx_set_state(&dev, SOLAR_OS_RADIO_STATE_RX) == ESP_OK);
+    size_t params = 0;
+    size_t rx = 0;
+    for (size_t i = before; i < chip.count; i++) {
+        if (chip.windows[i].opcode == LR11XX_OP_SET_PACKET_PARAMS) {
+            params = i;
+            assert(chip.windows[i].params[3] == LR11XX_MAX_PACKET_LEN);
+        } else if (chip.windows[i].opcode == LR11XX_OP_SET_RX) {
+            rx = i;
+        }
+    }
+    assert(params != 0 && rx != 0 && params < rx);
+}
+
 static void test_receive_reads_the_buffer_and_converts_the_metrics(void)
 {
     lr11xx_t dev;
@@ -988,6 +1022,7 @@ int main(void)
     test_status_is_a_bare_read_not_a_command();
     test_2g4_is_refused_rather_than_misrouted();
     test_send_writes_the_payload_without_an_offset();
+    test_listening_after_a_short_send_accepts_the_longest_packet();
     test_receive_reads_the_buffer_and_converts_the_metrics();
     test_pa_config_follows_the_reference_table();
     test_snr_rounds_with_the_bias_term();
