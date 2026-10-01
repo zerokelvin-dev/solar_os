@@ -17,6 +17,8 @@
  */
 
 #define LR11XX_OP_GET_VERSION 0x0101U
+#define LR11XX_OP_GET_ERRORS 0x010DU
+#define LR11XX_OP_GET_RSSI_INST 0x0205U
 #define LR11XX_OP_CALIBRATE 0x010FU
 #define LR11XX_OP_SET_REG_MODE 0x0110U
 #define LR11XX_OP_CALIBRATE_IMAGE 0x0111U
@@ -70,6 +72,8 @@ typedef struct {
     size_t wake_bytes;
     unsigned reads;
     unsigned status_reads;
+    uint8_t errors[2];
+    uint8_t rssi_inst_raw;
 } fake_chip_t;
 
 static fake_chip_t chip;
@@ -145,6 +149,12 @@ static void record_command(const uint8_t *tx, size_t len)
     switch (window->opcode) {
     case LR11XX_OP_GET_VERSION:
         queue(chip.version, sizeof(chip.version));
+        break;
+    case LR11XX_OP_GET_ERRORS:
+        queue(chip.errors, sizeof(chip.errors));
+        break;
+    case LR11XX_OP_GET_RSSI_INST:
+        queue(&chip.rssi_inst_raw, 1U);
         break;
     case LR11XX_OP_GET_RX_BUFFER_STATUS: {
         const uint8_t status[2] = {chip.rx_len, chip.rx_start};
@@ -527,6 +537,11 @@ static void test_tcxo_is_a_board_property(void)
     assert(tcxo != NULL);
     assert(tcxo->param_len == 4U);
     assert(tcxo->params[0] == 0x07U); /* 3.3 V */
+    /* 5 ms is 163 ticks of 30.52 us. On the bench a thousand times that
+     * held BUSY for five seconds and read as a radio that hangs after
+     * identifying itself. */
+    assert(tcxo->params[1] == 0x00U && tcxo->params[2] == 0x00U &&
+           tcxo->params[3] == 163U);
     assert(index_of(LR11XX_OP_SET_TCXO_MODE) < index_of(LR11XX_OP_CALIBRATE));
 
     /* The 3.0 V boards take the neighbouring code. */
@@ -918,8 +933,51 @@ static void test_rf_switch_comes_from_the_board(void)
     assert(find_window(LR11XX_OP_SET_DIO_AS_RF_SWITCH) == NULL);
 }
 
+
+/* GetErrors is two big-endian bytes; a clean configure reads back zero and
+ * a failed calibration sets the bit the design note names. */
+static void test_errors_are_read_as_the_part_reports_them(void)
+{
+    lr11xx_t dev;
+    reset_chip();
+    assert(open_device(&dev, 3300U) == ESP_OK);
+    uint16_t errors = 0xFFFFU;
+    assert(lr11xx_get_errors(&dev, &errors) == ESP_OK);
+    assert(errors == 0U);
+    chip.errors[0] = 0x00U;
+    chip.errors[1] = 0x20U; /* HF crystal start */
+    assert(lr11xx_get_errors(&dev, &errors) == ESP_OK);
+    assert(errors == 0x0020U);
+    assert(count_windows(LR11XX_OP_GET_ERRORS) == 2U);
+}
+
+/* Status while listening with nothing heard yet reads the channel, so a
+ * quiet band shows its noise floor rather than nothing at all. Once a
+ * packet has arrived its own level and SNR are what status reports. */
+static void test_status_while_listening_reads_the_channel(void)
+{
+    lr11xx_t dev;
+    reset_chip();
+    assert(open_device(&dev, 0) == ESP_OK);
+    solar_os_radio_config_t config = lora_config();
+    assert(lr11xx_configure(&dev, &config) == ESP_OK);
+    solar_os_radio_status_t status;
+    assert(lr11xx_get_status(&dev, &status) == ESP_OK);
+    assert(!status.has_rssi);
+    assert(count_windows(LR11XX_OP_GET_RSSI_INST) == 0U);
+
+    assert(lr11xx_set_state(&dev, SOLAR_OS_RADIO_STATE_RX) == ESP_OK);
+    chip.rssi_inst_raw = 210U; /* -105 dBm */
+    assert(lr11xx_get_status(&dev, &status) == ESP_OK);
+    assert(status.has_rssi);
+    assert(status.rssi_dbm == -105);
+    assert(!status.has_snr);
+    assert(count_windows(LR11XX_OP_GET_RSSI_INST) == 1U);
+}
 int main(void)
 {
+    test_errors_are_read_as_the_part_reports_them();
+    test_status_while_listening_reads_the_channel();
     test_frequency_is_plain_hertz();
     test_lora_bandwidth_codes();
     test_lora_parameter_encoding();

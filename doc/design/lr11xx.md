@@ -183,6 +183,7 @@ bit 3, `GetErrors` the other way round.
 | --- | --- | --- |
 | GetRxBufferStatus | `0x0203` | 2, response 2 (payload length, start pointer) |
 | GetPacketStatus | `0x0204` | 2, response 3 for LoRa |
+| GetRssiInst | `0x0205` | 2, response 1 |
 | SetRx | `0x0209` | 2 + 3 |
 | SetTx | `0x020A` | 2 + 3 |
 | SetRfFrequency | `0x020B` | 2 + 4 |
@@ -556,9 +557,15 @@ enumeration in the verified reference above is transcribed from Semtech's own
 driver and pinned by a host test, so the bytes leaving the bus are right by
 construction. What no amount of reading settles:
 
-- **Whether it works at all.** Nothing here has been run against silicon.
-  The single most likely class of failure is the transport, and the host test
-  covers the framing but not the timing.
+- ~~**Whether it works at all.**~~ Settled on the ThinkNode M9's LR1110
+  (firmware 3.3): GetVersion answers, GetErrors reads zero after configure,
+  a transmit raises TxDone, continuous receive reports a noise floor of
+  about -101 dBm on the MeshCore US preset, and the configuration survives a
+  warm sleep and wake. The one transport fault the host test could not see
+  was a unit error: the TCXO start-up delay was handed to SetTcxoMode a
+  thousand times too large, and the part held BUSY for the whole five
+  seconds, which from the outside is a radio that identifies itself and
+  then hangs. The test now pins the tick count.
 - **Actual radiated power.** The PA table is Semtech's evaluation-shield
   tuning. Neither of these boards is that shield.
 - **The GFSK code values** — pulse shape, receive bandwidth, preamble
@@ -571,7 +578,9 @@ construction. What no amount of reading settles:
   whether Semtech's per-transmit application is load-bearing for some reason
   the erratum text does not give.
 - **Whether the M9 unit in hand is 868 or 915 MHz.** Nothing on the board
-  says, and the manifest currently claims 915.
+  says, and the manifest claims 915. The part accepts 910.525 MHz without an
+  error flag, but the part would accept either band; only the matching
+  network knows, and no received packet has yet proved it.
 - **The T-LoRa-Pager's 2.4 GHz antenna topology** — whether the HF port goes
   straight to its own connector or through a switch. The published switch
   table implies the former. Its schematic would settle it.

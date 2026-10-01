@@ -40,6 +40,7 @@
 
 /* System group. */
 #define LR11XX_OP_GET_VERSION 0x0101U
+#define LR11XX_OP_GET_ERRORS 0x010DU
 #define LR11XX_OP_CLEAR_ERRORS 0x010EU
 #define LR11XX_OP_CALIBRATE 0x010FU
 #define LR11XX_OP_SET_REG_MODE 0x0110U
@@ -75,6 +76,7 @@
 /* Radio group. */
 #define LR11XX_OP_GET_RX_BUFFER_STATUS 0x0203U
 #define LR11XX_OP_GET_PACKET_STATUS 0x0204U
+#define LR11XX_OP_GET_RSSI_INST 0x0205U
 #define LR11XX_OP_SET_RX 0x0209U
 #define LR11XX_OP_SET_TX 0x020AU
 #define LR11XX_OP_SET_RF_FREQUENCY 0x020BU
@@ -417,6 +419,27 @@ esp_err_t lr11xx_init(lr11xx_t *dev,
         }
     }
 
+    /*
+     * Chip select is driven high here, as a plain GPIO, before the part is
+     * reset. The SPI peripheral only owns the pin for the length of a
+     * transfer, so until the first one it would float, and on a bus shared
+     * with a display a floating NSS lets the part read the display's bytes
+     * as commands. Semtech's reference HAL asserts NSS high before reset
+     * for the same reason.
+     */
+    const gpio_config_t cs_config = {
+        .pin_bit_mask = 1ULL << (uint32_t)cs_pin,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    err = gpio_config(&cs_config);
+    if (err != ESP_OK) {
+        return err;
+    }
+    gpio_set_level(cs_pin, 1);
+
     if (reset_pin >= 0) {
         const gpio_config_t reset_config = {
             .pin_bit_mask = 1ULL << (uint32_t)reset_pin,
@@ -476,6 +499,14 @@ esp_err_t lr11xx_probe(lr11xx_t *dev, lr11xx_version_t *version)
     case LR11XX_DEVICE_LR1121: part = LR11XX_PART_LR1121; break;
     default: part = LR11XX_PART_UNKNOWN; break;
     }
+    /* Reported whatever the answer was, so a caller can say what it saw. */
+    if (version != NULL) {
+        version->part = part;
+        version->hardware = resp[0];
+        version->device_code = resp[1];
+        version->firmware_major = resp[2];
+        version->firmware_minor = resp[3];
+    }
     if (part == LR11XX_PART_UNKNOWN) {
         /* An absent or dead module reads back all zeroes or all ones; an
          * unknown non-trivial type byte is a newer family member this driver
@@ -484,13 +515,6 @@ esp_err_t lr11xx_probe(lr11xx_t *dev, lr11xx_version_t *version)
         return ESP_ERR_NOT_FOUND;
     }
     dev->part = part;
-    if (version != NULL) {
-        version->part = part;
-        version->hardware = resp[0];
-        version->device_code = resp[1];
-        version->firmware_major = resp[2];
-        version->firmware_minor = resp[3];
-    }
 
     lr11xx_unlock(dev);
     return ESP_OK;
@@ -586,8 +610,12 @@ static esp_err_t lr11xx_set_tcxo(lr11xx_t *dev)
     else if (dev->tcxo_mv >= 1700U) tune = 0x01U;
     else tune = 0x00U;
 
-    /* 5 ms of start-up, in 1/32768 s ticks. */
-    const uint32_t delay_ticks = (uint32_t)((5000000ULL * 1000ULL) / LR11XX_TICK_NS);
+    /* 5 ms of start-up, in 1/32768 s ticks: 163 of them. The part holds
+     * BUSY for this whole delay the first time it needs the crystal, so a
+     * figure a thousand times too large does not look like a slow start -
+     * it looks like a dead radio that answers GetVersion and then hangs on
+     * the calibration that follows. */
+    const uint32_t delay_ticks = (uint32_t)(5000000ULL / LR11XX_TICK_NS);
     const uint8_t params[4] = {
         tune,
         (uint8_t)(delay_ticks >> 16), (uint8_t)(delay_ticks >> 8),
@@ -934,6 +962,24 @@ esp_err_t lr11xx_set_state(lr11xx_t *dev, solar_os_radio_state_t state)
     return err;
 }
 
+esp_err_t lr11xx_get_errors(lr11xx_t *dev, uint16_t *errors)
+{
+    if (dev == NULL || errors == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = lr11xx_lock(dev);
+    if (err != ESP_OK) {
+        return err;
+    }
+    uint8_t resp[2] = {0};
+    err = lr11xx_query(dev, LR11XX_OP_GET_ERRORS, NULL, 0, resp, sizeof(resp));
+    if (err == ESP_OK) {
+        *errors = (uint16_t)(((uint16_t)resp[0] << 8) | resp[1]);
+    }
+    lr11xx_unlock(dev);
+    return err;
+}
+
 esp_err_t lr11xx_get_status(lr11xx_t *dev, solar_os_radio_status_t *status)
 {
     if (dev == NULL || status == NULL) {
@@ -951,6 +997,15 @@ esp_err_t lr11xx_get_status(lr11xx_t *dev, solar_os_radio_status_t *status)
         status->rssi_dbm = dev->last_rssi_dbm;
         status->has_snr = true;
         status->snr_db = dev->last_snr_db;
+    } else if (dev->state == SOLAR_OS_RADIO_STATE_RX) {
+        /* Listening with nothing heard yet: the level on the channel right
+         * now, which says the receiver is alive even when nobody is
+         * transmitting. Same -raw/2 dBm scaling as a packet's RSSI. */
+        uint8_t raw = 0;
+        if (lr11xx_query(dev, LR11XX_OP_GET_RSSI_INST, NULL, 0, &raw, 1) == ESP_OK) {
+            status->has_rssi = true;
+            status->rssi_dbm = (int16_t)(-(int16_t)(raw >> 1));
+        }
     }
     lr11xx_unlock(dev);
     return ESP_OK;

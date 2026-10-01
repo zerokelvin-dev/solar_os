@@ -3,8 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "solar_os_log.h"
 #include "lr11xx.h"
 #include "solar_os_board.h"
 #include "solar_os_radio.h"
@@ -268,6 +270,7 @@ esp_err_t solar_os_lr11xx_attach(const char *name,
     strlcpy(device->name, name, sizeof(device->name));
     strlcpy(device->spi_bus, wiring.spi_bus, sizeof(device->spi_bus));
 
+    const char *step = "init";
     esp_err_t ret = lr11xx_init(&device->radio, wiring.spi_bus, wiring.cs_pin, wiring.busy_pin,
                                 wiring.reset_pin, wiring.irq_pin, LR11XX_DEFAULT_SPEED_HZ,
                                 wiring.tcxo_mv, rf_switch);
@@ -275,11 +278,20 @@ esp_err_t solar_os_lr11xx_attach(const char *name,
     if (ret == ESP_OK) {
         /* The part identifies itself, so nothing about which LR11xx this is
          * has to be compiled in or declared by the board. */
+        step = "probe";
         ret = lr11xx_probe(&device->radio, &version);
     }
     const solar_os_radio_config_t config = default_config(wiring.frequency_hz);
     if (ret == ESP_OK) {
+        step = "configure";
         ret = lr11xx_configure(&device->radio, &config);
+    }
+    /* Calibration and clock-start failures are reported here and nowhere
+     * else, and the part carries on regardless, so the flags go in the
+     * attach line rather than refusing the radio. Zero is a clean part. */
+    uint16_t errors = 0U;
+    if (ret == ESP_OK) {
+        (void)lr11xx_get_errors(&device->radio, &errors);
     }
     if (ret == ESP_OK) {
         snprintf(device->summary, sizeof(device->summary), "Semtech %s LoRa/(G)FSK radio",
@@ -311,18 +323,24 @@ esp_err_t solar_os_lr11xx_attach(const char *name,
     if (ret != ESP_OK) {
         clear_device(device);
         if (ret == ESP_ERR_NOT_FOUND) {
-            ESP_LOGW(TAG, "%s probe found no LR11xx", name);
+            SOLAR_OS_LOGW(TAG, "%s probe found no LR11xx (type byte 0x%02x)", name,
+                          (unsigned)version.device_code);
+        } else {
+            /* The BUSY level is the one fact a stuck part gives away. */
+            SOLAR_OS_LOGW(TAG, "%s %s failed: %s (busy=%d)", name, step,
+                          esp_err_to_name(ret), gpio_get_level(wiring.busy_pin));
         }
         return ret;
     }
 
-    ESP_LOGI(TAG,
-             "%s attached as %s fw %u.%u on %s CS GPIO%d BUSY GPIO%d%s%s",
-             name,
-             lr11xx_part_name(version.part),
-             (unsigned)version.firmware_major,
-             (unsigned)version.firmware_minor,
-             wiring.spi_bus,
+    SOLAR_OS_LOGI(TAG,
+                  "%s attached as %s fw %u.%u errors 0x%04x on %s CS GPIO%d BUSY GPIO%d%s%s",
+                  name,
+                  lr11xx_part_name(version.part),
+                  (unsigned)version.firmware_major,
+                  (unsigned)version.firmware_minor,
+                  (unsigned)errors,
+                  wiring.spi_bus,
              wiring.cs_pin,
              wiring.busy_pin,
              wiring.irq_pin >= 0 ? " irq" : "",

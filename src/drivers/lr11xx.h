@@ -99,6 +99,9 @@ esp_err_t lr11xx_probe(lr11xx_t *dev, lr11xx_version_t *version);
 esp_err_t lr11xx_configure(lr11xx_t *dev, const solar_os_radio_config_t *config);
 esp_err_t lr11xx_set_state(lr11xx_t *dev, solar_os_radio_state_t state);
 esp_err_t lr11xx_get_status(lr11xx_t *dev, solar_os_radio_status_t *status);
+/* The part's error flags, as GetErrors reports them: zero after a clean
+ * configure. */
+esp_err_t lr11xx_get_errors(lr11xx_t *dev, uint16_t *errors);
 esp_err_t lr11xx_send(lr11xx_t *dev,
                       const solar_os_radio_packet_t *packet,
                       uint32_t timeout_ms);
