@@ -1036,6 +1036,60 @@ flash BOARD FLAVOR [version=VERSION] [port=uart0] [boot=PIN] [reset=PIN] [baud=R
 See [Flash another ESP board](flash.md) for wiring, target-selection, security,
 storage, and verification details.
 
+## map
+
+Map of geo-tagged points published by any part of the system, drawn over the
+map layers that are loaded. The points come from the places service, a sink
+like the inbox: GNSS
+publishes your own position, MeshCore publishes chat adverts that carry a
+position, and the shell publishes waypoints. Published positions live in RAM
+only; waypoints are kept on the card and read back at startup.
+
+No map data ships in the firmware. Every layer comes from the card, either
+fetched from OpenStreetMap by the device or built on a desktop and copied
+over, so a device with no storage draws the points and nothing under them.
+The world is divided into quarter-degree cells named for their lower corner,
+such as `n4350w07950`, and a cell is the unit a map is fetched, kept and
+loaded in.
+
+Open the map on a display:
+
+```text
+map
+```
+
+Arrows or `h` `j` `k` `l` pan an eighth of a screen, `+` and `-` zoom,
+`Enter` fetches, loads or unloads the cell under the reticle, `Tab`, `n` and
+`p` move the selection, `c` centres on the selected point (following it when
+it is your own position), `f` fits every point, `r` reads the GNSS position
+now, `d` deletes the selected point, and `q` or `Esc` leaves. `F2` - the
+map key on a board that has one - centres on your own position and follows
+it, or shows the world when no position is known.
+
+Your own position is a filled circle inside a ring, a node an open circle,
+and a waypoint a cross. The info row under the map shows the selected point's
+coordinates, and its distance and bearing from your own position when one is
+known, or the reticle's own position when nothing is selected.
+`© OpenStreetMap contributors` is drawn over the map whenever it is shown.
+
+The map draws what it is given and changes none of it. Layers come and go
+through the shell:
+
+```text
+map status
+map fetch CELL|LATITUDE LONGITUDE
+map base
+map stored
+map layers
+map load /PATH|CELL|INDEX|NAME
+map unload INDEX|all
+map forget NAME
+```
+
+The points it draws are kept by `places` - `places add`, `places fix`,
+`places path` - see [Places](places.md). See [Map](map.md) for cells,
+layers, and the projection.
+
 ## contacts
 
 Provider-neutral address book for gateway and MeshCore identities. Contacts can

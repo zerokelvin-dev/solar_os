@@ -115,6 +115,17 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `inbox` | `inbox clear` | Remove every message. |
 | `inbox` | `inbox post <source> <message>` | Post a message from a shell script or for testing. |
 | `inbox` | `inbox notify [on\|off\|test]` | Show, persist, disable, or test the Inbox notification sound. It defaults to on and is unavailable on boards without audio output. |
+| `map` | `map` | Open the map. |
+| `map` | `map status` | Show the loaded-layer count and bytes against their budgets. |
+| `map` | `map fetch <cell>` | Fetch one quarter-degree cell, such as `n4350w07950`, from OpenStreetMap through the Overpass API and keep it on the card. |
+| `map` | `map fetch <latitude> <longitude>` | Fetch the cell holding a position. |
+| `map` | `map base` | Download the four Natural Earth world layers once and keep them; fetches only what is missing, and loads them when all four are already kept. |
+| `map` | `map stored` | List the maps kept on the card, with an index, a size, and whether each is loaded. |
+| `map` | `map load </path\|cell\|index\|name>` | Load a GeoJSON or packed layer, deflated or not, by path, by cell or kept name, or by its index in `map stored`, and keep a copy of it on the card. |
+| `map` | `map layers` | List the loaded layers in drawing order. |
+| `map` | `map unload <index\|all>` | Free one loaded layer, or every loaded layer, keeping the copies on the card. |
+| `map` | `map forget <name>` | Delete a kept map from the card, unloading it first if it is loaded. |
+| `map` | `map help` | Print every `map` usage form. |
 | `places` | `places status` | Show the point and path counts against their capacities. |
 | `places` | `places list` | List every plotted point, newest first. |
 | `places` | `places add <label> <latitude> <longitude>` | Store a waypoint at decimal-degree coordinates. |
