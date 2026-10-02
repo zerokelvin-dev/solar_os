@@ -892,11 +892,14 @@ sources = ["services/solar_os_inflate.c"]
 
 [packages.service_map]
 label = "service.map"
-depends = ["service_geo", "service_inflate"]
+depends = ["service_geo", "service_http_client", "service_inflate"]
 sources = [
   "services/solar_os_map_geojson.c",
   "services/solar_os_map_layers.c",
   "services/solar_os_map_project.c",
+  "services/solar_os_map_osm.c",
+  "services/solar_os_map_fetch.c",
+  "services/solar_os_map_http.c",
 ]
 requires = ["esp_timer", "heap"]
 

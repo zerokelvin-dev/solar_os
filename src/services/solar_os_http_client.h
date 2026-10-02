@@ -6,6 +6,18 @@
 
 #include "esp_err.h"
 
+/*
+ * What SolarOS calls itself to a server. Set here rather than left to each
+ * caller, so an operator reading their logs sees one name and knows who to
+ * talk to, and so a service with a usage policy can tell us apart from a
+ * browser. A caller with a reason of its own may still say something else.
+ */
+#ifndef SOLAR_OS_VERSION
+#define SOLAR_OS_VERSION "0"
+#endif
+#define SOLAR_OS_HTTP_USER_AGENT \
+    "SolarOS/" SOLAR_OS_VERSION " (+https://github.com/zerokelvin-dev/solar_os)"
+
 typedef struct solar_os_http_request solar_os_http_request_t;
 typedef struct solar_os_http_session_context solar_os_http_session_context_t;
 
