@@ -957,6 +957,7 @@ depends = ["service_geo", "service_inflate"]
 sources = [
   "services/solar_os_map_geojson.c",
   "services/solar_os_map_layers.c",
+  "services/solar_os_map_project.c",
 ]
 requires = ["esp_timer", "heap"]
 
