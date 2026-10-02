@@ -154,6 +154,7 @@ bool solar_os_map_ring_wanted(const solar_os_map_cull_t *cull,
             : ring->klass == SOLAR_OS_MAP_CLASS_RAIL     ? SOLAR_OS_MAP_RAIL_MAX_MPP
             : ring->klass == SOLAR_OS_MAP_CLASS_ROAD     ? SOLAR_OS_MAP_ROAD_MAX_MPP
             : ring->klass == SOLAR_OS_MAP_CLASS_ROAD_MINOR ? SOLAR_OS_MAP_ROAD_MINOR_MAX_MPP
+            : ring->klass == SOLAR_OS_MAP_CLASS_STREET   ? SOLAR_OS_MAP_STREET_MAX_MPP
                                                            : 0U;
         if (limit != 0U) {
             if (view->meters_per_col > limit) {

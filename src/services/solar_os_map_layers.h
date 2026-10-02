@@ -89,6 +89,12 @@ typedef enum {
      * narrowing of ROAD, so a layer packed before it keeps its meaning.
      */
     SOLAR_OS_MAP_CLASS_HIGHWAY = 9,
+    /*
+     * A residential, unclassified or living street: the rest of a city,
+     * drawn lightest and only close in. New rather than folded into
+     * ROAD_MINOR, so a layer packed before it keeps its meaning.
+     */
+    SOLAR_OS_MAP_CLASS_STREET = 10,
     SOLAR_OS_MAP_CLASS_COUNT,
 } solar_os_map_class_t;
 

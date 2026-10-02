@@ -62,16 +62,28 @@ map fetch n4350w07950
 map fetch 43.6532 -79.3832
 ```
 
-The request asks for water areas, rivers, railways, and roads down to
-tertiary. Residential streets are left out: they cover a third of the screen
-where the arterials cover a tenth, so which ways are fetched matters more
-than where they stop being drawn. The roads that do arrive are packed in
-three tiers - motorways and trunk roads as `highway`, primary and secondary
-as `road`, tertiary as `minor road` - and each tier has a scale it appears
-at, the same in every cell: motorways always, rail from 181 metres a pixel,
-arterials from 91, tertiaries from 45. A regional view keeps the motorways
-by themselves, a city view adds the arterials, and the tertiaries come in
-near street level.
+A cell is fetched a tier at a time, coarsest first, each its own request and
+its own file, so nothing is asked for before it would be drawn:
+
+| Tier | Asks for | Kept as | Drawn from |
+| --- | --- | --- | --- |
+| base | water areas, rivers, railways, motorways down to secondary | `<cell>.bin` | any scale |
+| minor | tertiary roads | `<cell>.minor.bin` | 45 metres a pixel |
+| streets | residential, unclassified and living streets | `<cell>.streets.bin` | 32 metres a pixel |
+
+`map fetch <cell> minor` and `map fetch <cell> streets` ask for the finer
+tiers; without a tier word it fetches the base. Within the base, motorways
+and trunk roads are always drawn, primary and secondary roads from 256
+metres a pixel and rail from 181. Every figure is the same in every cell, so
+neighbouring cells change together. The figures are the map's own Mercator
+scale; the scale bar shows ground distance, which is smaller away from the
+equator (256 reads as about 185 m/px at Toronto).
+
+Measured on the Toronto cell `n4350w07950`, the base is about 11 MB of JSON
+and 1.6 MB on the wire, most of it the lake's edge; the minor roads are
+1.9 MB and 0.3 MB; the streets 9.8 MB and 1.6 MB. A half-degree base is four
+times the size and a whole degree too large to keep, which is why the cell
+stays a quarter of a degree for every tier.
 
 The answer is asked for deflated. A dense cell is about 13 MB of JSON and
 under 2 MB on the wire, which is the difference between a fetch that
@@ -93,11 +105,14 @@ are coloured as themselves: the tags arrive after the geometry, so the class
 is filled in when the element closes. Anything the query does not explain
 falls back to road.
 
-In the app, pressing Enter fetches the cell under the reticle, which needs a
-network path. The word drawn inside the cell outline says what a press will
-do: `fetch` when there is no file, `load` when there is one, and `wait`
-while a fetch is running. A cell already drawn says nothing, because the
-map is its label; pressing it puts it away.
+In the app, each press of Enter adds one tier to the cell under the
+reticle: the coarsest tier drawn at the current scale that is not on the
+map yet, loaded if it is kept and fetched if it is not. Fetching needs a
+network path, and runs one at a time. The word inside the cell outline says
+what a press will do (`fetch`, `load`, `fetch streets`, and so on, or `wait`
+while a fetch is running), and the outline is drawn only while a press
+would do something. With every tier drawn at this scale on the map, zoom
+in for the next; `map unload` puts a tier away.
 
 ## The world, the first time
 
@@ -273,7 +288,7 @@ map load /sdcard/toronto.bin
 | --- | --- |
 | Arrows, `h` `j` `k` `l` | Pan an eighth of a screen |
 | `+` `-` | Zoom in and out |
-| `Enter` | Fetch, load or unload the cell under the reticle |
+| `Enter` | Add the next tier of the cell under the reticle |
 | `Tab`, `n`, `p` | Select the next or previous point |
 | `c` | Centre on the selected point, and follow it if it is your position |
 | `f` | Fit every point on screen |
@@ -287,10 +302,9 @@ inside a ring, a node is an open circle, and a waypoint is a cross. A small
 cross sits at the centre of the view: panning moves the map under it, so it
 is what you line up with a target when working down from a zoomed-out view.
 Zooming holds the centre, so a target stays under the cross as you go in.
-The cell the reticle sits in is outlined with a dashed line while it is
-something you could act on — a file already kept, or a network to fetch one
-over — and while it is between a quarter of the screen and a couple of
-screens wide. The selected point is boxed and labelled, and the row under
+The cell the reticle sits in is outlined with a dashed line while a press
+would load or fetch a tier of it, and while it is between a quarter of the
+screen and three screens wide. The selected point is boxed and labelled, and the row under
 the map gives its coordinates, and the distance and bearing from your own
 position when one is known. With nothing selected that row gives the
 reticle's own position and the scale.
@@ -300,8 +314,8 @@ reticle's own position and the scale.
 ```text
 map                                  open the app
 map status                           layer count and bytes against the budget
-map fetch <cell>                     ask OpenStreetMap for one cell
-map fetch <latitude> <longitude>     the cell holding a position
+map fetch <cell> [minor|streets]     ask OpenStreetMap for one tier of a cell
+map fetch <latitude> <longitude>     the base of the cell holding a position
 map base                             download the world map, once
 map stored                           the maps kept on the card, with indices
 map load </path|cell|index|name>     load a map and keep a copy of it
@@ -334,11 +348,11 @@ A cell fetched by the device, and any layer built with
 [Overpass API](https://overpass-api.de/), and is licensed under the
 [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
 That licence asks for credit whenever the data is shown, so the application
-draws `© OpenStreetMap contributors` over the map whenever the map is on
-screen, whatever is loaded, shortened to `© OpenStreetMap` when the row is
-too narrow for the long form. Crediting too often is the harmless
-direction, and a line that comes and goes is worse to read than one that
-stays. The full terms are at
+draws `© OpenStreetMap contributors` over the map whenever a layer other
+than the world is in view, shortened to `© OpenStreetMap` when the row is
+too narrow for the long form. A layer brought from somewhere else is
+credited the same way: a layer carries no record of where it came from, and
+crediting too often is the harmless direction. The full terms are at
 <https://www.openstreetmap.org/copyright>, and the
 [attribution guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)
 say what is expected:
@@ -360,10 +374,14 @@ app shows, as `openstreetmap busy, try later`. The status and the byte
 count go to the log rather than the screen, where `log show` will find
 them: a status number is nothing a reader can act on.
 
-Layers built with `scripts/build_map_basemap.py` come from
+The world, whether fetched with `map base` or built with
+`scripts/build_map_basemap.py`, comes from
 [Natural Earth](https://www.naturalearthdata.com/), which is public domain:
 
 > All versions of Natural Earth raster and vector map data found on this
 > website are in the public domain.
 
-Nothing need be credited for them.
+Its [terms of use](https://www.naturalearthdata.com/about/terms-of-use/) say
+crediting the authors is unnecessary and suggest a wording for anyone who
+wishes to. The application uses it: with only the world in view it draws
+`Made with Natural Earth`, shortened to `Natural Earth` on a narrow row.

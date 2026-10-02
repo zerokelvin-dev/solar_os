@@ -15,6 +15,7 @@
 #include "solar_os_map_http.h"
 #include "solar_os_map_layers.h"
 #include "solar_os_map_osm.h"
+#include "solar_os_map_project.h"
 #include "solar_os_memory.h"
 
 static const char *TAG = "map_fetch";
@@ -22,18 +23,46 @@ static const char *TAG = "map_fetch";
 #define MAP_FETCH_ENDPOINT "https://overpass-api.de/api/interpreter"
 #define MAP_FETCH_TIMEOUT_MS 180000U
 /*
- * The ways worth carrying: water, the rivers that drain it, the railways,
- * and the roads down to tertiary. Residential streets are left out, not
- * because they do not fit but because they cover a third of the screen
- * where these cover a tenth.
+ * What each tier asks for, the box filled in for every clause. The base
+ * carries the water, the rivers that drain it, the railways and the roads
+ * down to secondary; the other two are one kind of road each.
  */
-#define MAP_FETCH_QUERY_FMT                                                   \
-    "[out:json][timeout:170];\n(\n"                                           \
-    "  way[\"natural\"=\"water\"](%s);\n  rel[\"natural\"=\"water\"](%s);\n"  \
-    "  way[\"waterway\"=\"river\"](%s);\n"                                    \
-    "  way[\"railway\"=\"rail\"](%s);\n"                                      \
-    "  way[\"highway\"~\"^(motorway|trunk|primary|secondary|tertiary)$\"]"    \
-    "(%s);\n);\nout geom;\n"
+static const char *const map_fetch_clauses[SOLAR_OS_MAP_TIER_COUNT] = {
+    "  way[\"natural\"=\"water\"](%s);\n  rel[\"natural\"=\"water\"](%s);\n"
+    "  way[\"waterway\"=\"river\"](%s);\n"
+    "  way[\"railway\"=\"rail\"](%s);\n"
+    "  way[\"highway\"~\"^(motorway|trunk|primary|secondary)$\"](%s);\n",
+    "  way[\"highway\"=\"tertiary\"](%s);\n",
+    "  way[\"highway\"~\"^(residential|unclassified|living_street)$\"](%s);\n",
+};
+
+static const char *const map_fetch_suffixes[SOLAR_OS_MAP_TIER_COUNT] = {
+    "", ".minor", ".streets",
+};
+
+uint32_t solar_os_map_tier_max_mpp(solar_os_map_tier_t tier)
+{
+    switch (tier) {
+    case SOLAR_OS_MAP_TIER_MINOR:
+        return SOLAR_OS_MAP_ROAD_MINOR_MAX_MPP;
+    case SOLAR_OS_MAP_TIER_STREETS:
+        return SOLAR_OS_MAP_STREET_MAX_MPP;
+    default:
+        return UINT32_MAX;
+    }
+}
+
+void solar_os_map_tier_name(int32_t latitude_e7,
+                            int32_t longitude_e7,
+                            solar_os_map_tier_t tier,
+                            char *out,
+                            size_t out_len)
+{
+    char cell[SOLAR_OS_MAP_CELL_NAME_MAX];
+    solar_os_map_cell_name(latitude_e7, longitude_e7, cell, sizeof(cell));
+    (void)snprintf(out, out_len, "%s%s", cell,
+                   tier < SOLAR_OS_MAP_TIER_COUNT ? map_fetch_suffixes[tier] : "");
+}
 
 /* TLS wants room: the same work through the curl application is given
  * twelve kilobytes, and less than that is not worth finding out about. */
@@ -49,6 +78,7 @@ static uint32_t map_fetch_generation;
 typedef struct {
     int32_t latitude_e7;
     int32_t longitude_e7;
+    solar_os_map_tier_t tier;
 } map_fetch_job_t;
 
 uint32_t solar_os_map_fetch_generation(void)
@@ -66,10 +96,12 @@ const char *solar_os_map_fetch_status(void)
     return map_fetch_message;
 }
 
-static esp_err_t map_fetch_run(int32_t latitude_e7, int32_t longitude_e7)
+static esp_err_t map_fetch_run(int32_t latitude_e7,
+                               int32_t longitude_e7,
+                               solar_os_map_tier_t tier)
 {
-    char name[SOLAR_OS_MAP_CELL_NAME_MAX];
-    solar_os_map_cell_name(latitude_e7, longitude_e7, name, sizeof(name));
+    char name[SOLAR_OS_MAP_LAYER_NAME_MAX];
+    solar_os_map_tier_name(latitude_e7, longitude_e7, tier, name, sizeof(name));
     int32_t south = 0;
     int32_t west = 0;
     solar_os_map_cell_corner(latitude_e7, longitude_e7, &south, &west);
@@ -83,9 +115,14 @@ static esp_err_t map_fetch_run(int32_t latitude_e7, int32_t longitude_e7)
                    abs((south + SOLAR_OS_MAP_CELL_E7) % 10000000),
                    (west + SOLAR_OS_MAP_CELL_E7) / 10000000,
                    abs((west + SOLAR_OS_MAP_CELL_E7) % 10000000));
+    char clauses[768];
+    /* Surplus arguments are ignored, so every tier is handed the box as many
+     * times as the base, which wants it most. */
+    (void)snprintf(clauses, sizeof(clauses), map_fetch_clauses[tier], box, box,
+                   box, box, box);
     char query[1024];
-    (void)snprintf(query, sizeof(query), MAP_FETCH_QUERY_FMT, box, box, box,
-                   box, box);
+    (void)snprintf(query, sizeof(query),
+                   "[out:json][timeout:170];\n(\n%s);\nout geom;\n", clauses);
 
     char progress[sizeof(map_fetch_message)];
     const solar_os_map_download_t what = {
@@ -144,15 +181,20 @@ static esp_err_t map_fetch_run(int32_t latitude_e7, int32_t longitude_e7)
 static void map_fetch_task(void *argument)
 {
     map_fetch_job_t *job = argument;
-    (void)map_fetch_run(job->latitude_e7, job->longitude_e7);
+    (void)map_fetch_run(job->latitude_e7, job->longitude_e7, job->tier);
     solar_os_memory_free(job);
     map_fetch_generation++;
     map_fetch_running = false;
     solar_os_task_delete_internal(NULL);
 }
 
-esp_err_t solar_os_map_fetch_cell(int32_t latitude_e7, int32_t longitude_e7)
+esp_err_t solar_os_map_fetch_cell(int32_t latitude_e7,
+                                  int32_t longitude_e7,
+                                  solar_os_map_tier_t tier)
 {
+    if (tier >= SOLAR_OS_MAP_TIER_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (map_fetch_running) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -165,9 +207,10 @@ esp_err_t solar_os_map_fetch_cell(int32_t latitude_e7, int32_t longitude_e7)
     }
     job->latitude_e7 = latitude_e7;
     job->longitude_e7 = longitude_e7;
+    job->tier = tier;
     map_fetch_running = true;
-    char name[SOLAR_OS_MAP_CELL_NAME_MAX];
-    solar_os_map_cell_name(latitude_e7, longitude_e7, name, sizeof(name));
+    char name[SOLAR_OS_MAP_LAYER_NAME_MAX];
+    solar_os_map_tier_name(latitude_e7, longitude_e7, tier, name, sizeof(name));
     (void)snprintf(map_fetch_message, sizeof(map_fetch_message),
                    "asking openstreetmap for %s", name);
     /* Through the system's own task creation, so a download counts against

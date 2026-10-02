@@ -129,7 +129,7 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `inbox` | `inbox notify [on\|off\|test]` | Show, persist, disable, or test the Inbox notification sound. It defaults to on and is unavailable on boards without audio output. |
 | `map` | `map` | Open the map. |
 | `map` | `map status` | Show the loaded-layer count and bytes against their budgets. |
-| `map` | `map fetch <cell>` | Fetch one quarter-degree cell, such as `n4350w07950`, from OpenStreetMap through the Overpass API and keep it on the card. |
+| `map` | `map fetch <cell> [minor\|streets]` | Fetch one tier of a quarter-degree cell, such as `n4350w07950`, from OpenStreetMap through the Overpass API and keep it on the card. Without a tier it fetches the base: water, rail and roads down to secondary. |
 | `map` | `map fetch <latitude> <longitude>` | Fetch the cell holding a position. |
 | `map` | `map base` | Download the four Natural Earth world layers once and keep them; fetches only what is missing, and loads them when all four are already kept. |
 | `map` | `map stored` | List the maps kept on the card, with an index, a size, and whether each is loaded. |
