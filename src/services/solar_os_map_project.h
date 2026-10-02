@@ -47,8 +47,9 @@
  * zooms and the seam between them showed. Motorways are always drawn.
  */
 #define SOLAR_OS_MAP_RAIL_MAX_MPP 181U
-#define SOLAR_OS_MAP_ROAD_MAX_MPP 91U
+#define SOLAR_OS_MAP_ROAD_MAX_MPP 256U
 #define SOLAR_OS_MAP_ROAD_MINOR_MAX_MPP 45U
+#define SOLAR_OS_MAP_STREET_MAX_MPP 32U
 /* A whole turn of longitude, in 1e7 degrees. */
 #define SOLAR_OS_MAP_TURN_E7 ((int64_t)SOLAR_OS_MAP_LON_MAX_E7 * 2)
 

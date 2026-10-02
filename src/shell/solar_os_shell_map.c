@@ -51,7 +51,8 @@ static void map_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io,
         "  map forget <name>                  delete a kept map from the card");
     solar_os_shell_io_writeln(io,
-        "  map fetch <cell|latitude longitude>  ask OpenStreetMap for a cell");
+        "  map fetch <cell|latitude longitude> [minor|streets]\n"
+        "                                     ask OpenStreetMap for one tier of a cell");
     solar_os_shell_io_writeln(io, "  map unload <index|all>");
     solar_os_shell_io_writeln(io, "  map help");
     solar_os_shell_io_writeln(io, "points and paths: places help");
@@ -209,16 +210,24 @@ void solar_os_shell_cmd_map(solar_os_context_t *ctx, int argc, char **argv)
         }
         return;
     }
-    if (strcmp(argv[1], "fetch") == 0 && (argc == 3 || argc == 4)) {
+    if (strcmp(argv[1], "fetch") == 0 && argc >= 3 && argc <= 5) {
+        /* A trailing tier word asks for that tier; the base is the default. */
+        solar_os_map_tier_t tier = SOLAR_OS_MAP_TIER_BASE;
+        int place = argc;
+        if (strcmp(argv[argc - 1], "minor") == 0) {
+            tier = SOLAR_OS_MAP_TIER_MINOR;
+            place--;
+        } else if (strcmp(argv[argc - 1], "streets") == 0) {
+            tier = SOLAR_OS_MAP_TIER_STREETS;
+            place--;
+        }
         int32_t latitude = 0;
         int32_t longitude = 0;
-        const bool named = argc == 3
-                               ? solar_os_map_cell_parse(argv[2], &latitude,
-                                                         &longitude)
-                               : (solar_os_map_parse_degrees(argv[2], true,
-                                                             &latitude) &&
-                                  solar_os_map_parse_degrees(argv[3], false,
-                                                             &longitude));
+        const bool named =
+            place == 3 ? solar_os_map_cell_parse(argv[2], &latitude, &longitude)
+            : place == 4 ? (solar_os_map_parse_degrees(argv[2], true, &latitude) &&
+                            solar_os_map_parse_degrees(argv[3], false, &longitude))
+                         : false;
         if (!named) {
             solar_os_shell_diag_invalid(
                 io,
@@ -226,7 +235,7 @@ void solar_os_shell_cmd_map(solar_os_context_t *ctx, int argc, char **argv)
                 "cell",
                 argv[2],
                 "a cell such as n4350w07950, or a latitude and longitude",
-                "map fetch <cell|latitude longitude>",
+                "map fetch <cell|latitude longitude> [minor|streets]",
                 false);
             return;
         }
@@ -234,7 +243,7 @@ void solar_os_shell_cmd_map(solar_os_context_t *ctx, int argc, char **argv)
             solar_os_shell_io_writeln(io, "map fetch: already asking");
             return;
         }
-        const esp_err_t err = solar_os_map_fetch_cell(latitude, longitude);
+        const esp_err_t err = solar_os_map_fetch_cell(latitude, longitude, tier);
         if (err != ESP_OK) {
             solar_os_shell_io_printf(io, "map fetch: %s\n",
                                      solar_os_map_fetch_status());

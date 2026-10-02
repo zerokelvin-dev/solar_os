@@ -42,6 +42,7 @@ typedef struct {
     bool tag_rail;
     bool tag_road;
     bool tag_road_minor;
+    bool tag_street;
     bool tag_highway;
     /* Whether the element was a relation: only its members carry a role. */
     bool tag_member;
@@ -152,15 +153,18 @@ static void value_end(osm_scan_t *scan)
     } else if (strcmp(scan->key, "highway") == 0) {
         scan->tag_road = true;
         /*
-         * Three tiers, so a regional view keeps the motorways after the
-         * rest have gone and a city view keeps the arterials after the
-         * tertiaries have. Anything not named here is the lowest tier,
+         * Four tiers, so a regional view keeps the motorways after the
+         * rest have gone, a city view keeps the arterials, and the streets
+         * come in last. Anything not named here is a minor road,
          * including a name too long to have been kept whole, which is
          * always a link or a service road.
          */
         scan->tag_highway = strcmp(scan->string, "motorway") == 0 ||
                             strcmp(scan->string, "trunk") == 0;
-        scan->tag_road_minor = !scan->tag_highway &&
+        scan->tag_street = strcmp(scan->string, "residential") == 0 ||
+                           strcmp(scan->string, "unclassified") == 0 ||
+                           strcmp(scan->string, "living_street") == 0;
+        scan->tag_road_minor = !scan->tag_highway && !scan->tag_street &&
                                strcmp(scan->string, "primary") != 0 &&
                                strcmp(scan->string, "secondary") != 0;
     }
@@ -177,7 +181,8 @@ static void element_end(osm_scan_t *scan, solar_os_map_class_t fallback)
     } else if (scan->tag_rail) {
         klass = SOLAR_OS_MAP_CLASS_RAIL;
     } else if (scan->tag_road) {
-        klass = scan->tag_highway     ? SOLAR_OS_MAP_CLASS_HIGHWAY
+        klass = scan->tag_highway      ? SOLAR_OS_MAP_CLASS_HIGHWAY
+                : scan->tag_street     ? SOLAR_OS_MAP_CLASS_STREET
                 : scan->tag_road_minor ? SOLAR_OS_MAP_CLASS_ROAD_MINOR
                                        : SOLAR_OS_MAP_CLASS_ROAD;
     }
@@ -185,6 +190,7 @@ static void element_end(osm_scan_t *scan, solar_os_map_class_t fallback)
     scan->tag_rail = false;
     scan->tag_road = false;
     scan->tag_road_minor = false;
+    scan->tag_street = false;
     scan->tag_highway = false;
     scan->tag_member = false;
     if (scan->element_end != NULL) {

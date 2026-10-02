@@ -49,6 +49,9 @@ static const char ANSWER[] =
     "{\"type\":\"way\",\"id\":9,\"geometry\":["
     "{\"lat\":50.1,\"lon\":-79.1},{\"lat\":50.2,\"lon\":-79.2}],"
     "\"tags\":{\"highway\":\"secondary\"}},\n"
+    "{\"type\":\"way\",\"id\":10,\"geometry\":["
+    "{\"lat\":51.1,\"lon\":-79.1},{\"lat\":51.2,\"lon\":-79.2}],"
+    "\"tags\":{\"highway\":\"residential\"}},\n"
     "{\"type\":\"way\",\"id\":6,\"geometry\":["
     "{\"lat\":47.1,\"lon\":-79.1},{\"lat\":47.2,\"lon\":-79.2}],"
     "\"tags\":{\"name\":\"nothing we asked for\"}},\n"
@@ -143,21 +146,23 @@ static FILE *write_gzip(const void *data, size_t size)
 
 static void check_classes(const uint8_t *packed, uint32_t rings)
 {
-    /* Nine runs: seven ways, then the relation's two members. */
-    assert(rings == 9U);
+    /* Ten runs: eight ways, then the relation's two members. */
+    assert(rings == 10U);
     assert(ring_class(packed, 0U) == SOLAR_OS_MAP_CLASS_WATER);
     assert(ring_class(packed, 1U) == SOLAR_OS_MAP_CLASS_WATER);
     assert(ring_class(packed, 2U) == SOLAR_OS_MAP_CLASS_RAIL);
-    /* The three tiers of road: a motorway, a tertiary, a secondary. */
+    /* The four tiers of road: a motorway, a tertiary, a secondary, a
+     * residential street. */
     assert(ring_class(packed, 3U) == SOLAR_OS_MAP_CLASS_HIGHWAY);
     assert(ring_class(packed, 4U) == SOLAR_OS_MAP_CLASS_ROAD_MINOR);
     assert(ring_class(packed, 5U) == SOLAR_OS_MAP_CLASS_ROAD);
+    assert(ring_class(packed, 6U) == SOLAR_OS_MAP_CLASS_STREET);
     /* Nothing the query explains, so it keeps the name the caller gave. */
-    assert(ring_class(packed, 6U) == SOLAR_OS_MAP_CLASS_BUILDING);
+    assert(ring_class(packed, 7U) == SOLAR_OS_MAP_CLASS_BUILDING);
     /* Both members of the relation are pieces of the water's edge, which
      * is what a relation's ways are: not water, but where it stops. */
-    assert(ring_class(packed, 7U) == SOLAR_OS_MAP_CLASS_WATER_EDGE);
     assert(ring_class(packed, 8U) == SOLAR_OS_MAP_CLASS_WATER_EDGE);
+    assert(ring_class(packed, 9U) == SOLAR_OS_MAP_CLASS_WATER_EDGE);
 
     /* The first run closes, so it is an area and does not repeat its start. */
     assert((ring_word(packed, 0U) & SOLAR_OS_MAP_RING_OPEN) == 0U);
