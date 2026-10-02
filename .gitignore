@@ -103,3 +103,6 @@ tests/host/ssd1306_named_bus_test
 /protocol/sc2/tools/__pycache__/
 /protocol/sc2/build/
 tests/host/*_test
+
+# Downloaded map source data
+.cache/
