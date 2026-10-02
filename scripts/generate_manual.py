@@ -49,6 +49,7 @@ DERIVED_ALIAS_OWNERS = {
     ("command.job", "job"): "jobs",
     ("command.jobs", "jobs"): "jobs",
     ("command.link", "link"): "link",
+    ("command.places", "places"): "places",
     ("command.meshcore", "meshcore"): "meshcore",
     ("command.mqtt", "mqtt"): "network",
     ("command.network", "network"): "network",
