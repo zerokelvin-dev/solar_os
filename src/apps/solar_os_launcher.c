@@ -58,14 +58,17 @@ static void *launcher_state_storage;
 
 static const char launcher_default_config[] =
     "{\n"
-    "  \"layout\": {\"columns\": 3, \"rows\": 2},\n"
+    "  \"layout\": {\"columns\": 3, \"rows\": 3},\n"
     "  \"items\": [\n"
-    "    {\"name\": \"Files\", \"icon\": \"folder\", \"command\": \"files\", \"column\": 0, \"row\": 0},\n"
-    "    {\"name\": \"Manual\", \"icon\": \"book\", \"command\": \"help\", \"column\": 1, \"row\": 0},\n"
+    "    {\"name\": \"Map\", \"icon\": \"map-marker\", \"command\": \"map\", \"column\": 0, \"row\": 0},\n"
+    "    {\"name\": \"Chat\", \"icon\": \"chat\", \"command\": \"chat\", \"column\": 1, \"row\": 0},\n"
     "    {\"name\": \"Wi-Fi\", \"icon\": \"wifi\", \"command\": \"wifi\", \"column\": 2, \"row\": 0},\n"
-    "    {\"name\": \"Clock\", \"icon\": \"clock\", \"command\": \"clock\", \"column\": 0, \"row\": 1},\n"
-    "    {\"name\": \"Calculator\", \"icon\": \"calculator\", \"command\": \"calc\", \"column\": 1, \"row\": 1},\n"
-    "    {\"name\": \"Writer\", \"icon\": \"pencil\", \"command\": \"writer\", \"column\": 2, \"row\": 1}\n"
+    "    {\"name\": \"Files\", \"icon\": \"folder\", \"command\": \"files\", \"column\": 0, \"row\": 1},\n"
+    "    {\"name\": \"Manual\", \"icon\": \"book\", \"command\": \"help\", \"column\": 1, \"row\": 1},\n"
+    "    {\"name\": \"Contacts\", \"icon\": \"people\", \"command\": \"contacts\", \"column\": 2, \"row\": 1},\n"
+    "    {\"name\": \"Clock\", \"icon\": \"clock\", \"command\": \"clock\", \"column\": 0, \"row\": 2},\n"
+    "    {\"name\": \"Calculator\", \"icon\": \"calculator\", \"command\": \"calc\", \"column\": 1, \"row\": 2},\n"
+    "    {\"name\": \"Writer\", \"icon\": \"pencil\", \"command\": \"writer\", \"column\": 2, \"row\": 2}\n"
     "  ]\n"
     "}\n";
 
