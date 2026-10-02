@@ -3,7 +3,7 @@ id = "places"
 title = "Places"
 section = "app"
 summary = "Keep points and paths: your position, nodes, and waypoints"
-keywords = "places points waypoint position gnss fix node path self"
+keywords = "places points waypoint position gnss fix meshcore node path self"
 packages_any = ["service_places"]
 +++
 
@@ -74,6 +74,7 @@ so republishing the same key moves the point rather than adding a second one.
 | Source | Kind | Published by |
 | --- | --- | --- |
 | `gnss` | self | `places fix` |
+| `meshcore` | node | chat adverts that carry a GPS position, a route refreshed for a node that had one, and the positions read back with the contacts at startup |
 | `user` | waypoint | `places add`, and kept on the card |
 
 When the store is full the oldest node point is evicted. Waypoints and your
