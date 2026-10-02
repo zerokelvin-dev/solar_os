@@ -22,3 +22,6 @@ dependencies.lock
 scripts/__pycache__/
 tests/__pycache__/
 tests/host/*_test
+
+# Downloaded map source data
+.cache/
