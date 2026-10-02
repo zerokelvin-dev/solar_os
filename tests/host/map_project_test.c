@@ -413,8 +413,9 @@ static void test_road_tiers_come_in_by_scale(void)
     } tiers[] = {
         {SOLAR_OS_MAP_CLASS_HIGHWAY, 100000U, 0U},
         {SOLAR_OS_MAP_CLASS_RAIL, 181U, 256U},
-        {SOLAR_OS_MAP_CLASS_ROAD, 91U, 128U},
+        {SOLAR_OS_MAP_CLASS_ROAD, 256U, 362U},
         {SOLAR_OS_MAP_CLASS_ROAD_MINOR, 45U, 64U},
+        {SOLAR_OS_MAP_CLASS_STREET, 32U, 45U},
     };
     for (size_t t = 0U; t < sizeof(tiers) / sizeof(tiers[0]); t++) {
         size_t size = 0U;
