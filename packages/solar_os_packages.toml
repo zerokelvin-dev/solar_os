@@ -322,6 +322,11 @@ label = "Places"
 category = "Messaging"
 members = ["service_places"]
 
+[groups.map]
+label = "Map"
+category = "Messaging"
+members = ["service_map"]
+
 [groups.contacts]
 label = "Contacts"
 category = "Messaging"
@@ -878,6 +883,19 @@ sources = [
   "services/solar_os_places.c",
   "services/solar_os_places_gnss.c",
   "shell/solar_os_shell_places.c",
+]
+requires = ["esp_timer", "heap"]
+
+[packages.service_inflate]
+label = "service.inflate"
+sources = ["services/solar_os_inflate.c"]
+
+[packages.service_map]
+label = "service.map"
+depends = ["service_geo", "service_inflate"]
+sources = [
+  "services/solar_os_map_geojson.c",
+  "services/solar_os_map_layers.c",
 ]
 requires = ["esp_timer", "heap"]
 
