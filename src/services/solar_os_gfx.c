@@ -966,9 +966,86 @@ void solar_os_gfx_pixel(solar_os_gfx_t *gfx, int x, int y)
     gfx_mark_dirty(gfx);
 }
 
+/*
+ * Cohen-Sutherland. A line is walked a pixel at a time, so one pointing far
+ * off the surface costs a step for every pixel it would have covered out
+ * there. Trimming the ends first makes a line cost what it draws rather
+ * than where it points.
+ *
+ * Restarting the walk at the trimmed end moves it by up to a pixel, since
+ * the error term no longer carries the part that was cut, which is why a
+ * dashed or dotted line is only rejected when it misses entirely.
+ */
+static int gfx_outcode(int x, int y, int width, int height)
+{
+    return (x < 0 ? 1 : 0) | (x >= width ? 2 : 0) |
+           (y < 0 ? 4 : 0) | (y >= height ? 8 : 0);
+}
+
+static bool gfx_clip_segment(int *x0, int *y0, int *x1, int *y1,
+                             int width, int height)
+{
+    int a = gfx_outcode(*x0, *y0, width, height);
+    int b = gfx_outcode(*x1, *y1, width, height);
+    /* Each pass sends one endpoint to an edge, so four settle any segment. */
+    for (int pass = 0; pass < 4; pass++) {
+        if ((a | b) == 0) {
+            return true;
+        }
+        if ((a & b) != 0) {
+            return false;
+        }
+        const int out = a != 0 ? a : b;
+        int x = 0;
+        int y = 0;
+        if ((out & 8) != 0) {
+            y = height - 1;
+            x = *x0 + (int)((((int64_t)*x1 - *x0) * ((int64_t)y - *y0)) /
+                            ((int64_t)*y1 - *y0));
+        } else if ((out & 4) != 0) {
+            y = 0;
+            x = *x0 + (int)((((int64_t)*x1 - *x0) * ((int64_t)y - *y0)) /
+                            ((int64_t)*y1 - *y0));
+        } else if ((out & 2) != 0) {
+            x = width - 1;
+            y = *y0 + (int)((((int64_t)*y1 - *y0) * ((int64_t)x - *x0)) /
+                            ((int64_t)*x1 - *x0));
+        } else {
+            x = 0;
+            y = *y0 + (int)((((int64_t)*y1 - *y0) * ((int64_t)x - *x0)) /
+                            ((int64_t)*x1 - *x0));
+        }
+        if (out == a) {
+            *x0 = x;
+            *y0 = y;
+            a = gfx_outcode(x, y, width, height);
+        } else {
+            *x1 = x;
+            *y1 = y;
+            b = gfx_outcode(x, y, width, height);
+        }
+    }
+    return (a | b) == 0;
+}
+
 void solar_os_gfx_line(solar_os_gfx_t *gfx, int x0, int y0, int x1, int y1)
 {
     if (!gfx_ready(gfx)) {
+        return;
+    }
+
+    const bool direct = gfx_uses_index8(gfx);
+    const int width = direct ? (int)gfx->index8->surface.width
+                             : (int)u8g2_GetDisplayWidth(gfx->u8g2);
+    const int height = direct ? (int)gfx->index8->surface.height
+                              : (int)u8g2_GetDisplayHeight(gfx->u8g2);
+    if (gfx->line_style == SOLAR_OS_GFX_LINE_SOLID) {
+        if (!gfx_clip_segment(&x0, &y0, &x1, &y1, width, height)) {
+            return;
+        }
+    } else if ((gfx_outcode(x0, y0, width, height) &
+                gfx_outcode(x1, y1, width, height)) != 0) {
+        /* Wholly past one edge: nothing of it can land on the surface. */
         return;
     }
 
@@ -978,6 +1055,16 @@ void solar_os_gfx_line(solar_os_gfx_t *gfx, int x0, int y0, int x1, int y1)
     int sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
     unsigned step = 0;
+
+    /*
+     * On an indexed surface a pixel is one byte at a known offset, so it is
+     * written here rather than through the clipped run helper once per
+     * pixel. One dirty rectangle for the whole line serves as well.
+     */
+    int touched_left = x0 < x1 ? x0 : x1;
+    int touched_right = x0 < x1 ? x1 : x0;
+    int touched_top = y0 < y1 ? y0 : y1;
+    int touched_bottom = y0 < y1 ? y1 : y0;
 
     while (true) {
         bool draw = true;
@@ -994,7 +1081,14 @@ void solar_os_gfx_line(solar_os_gfx_t *gfx, int x0, int y0, int x1, int y1)
             break;
         }
         if (draw) {
-            gfx_draw_hline_shade_clipped(gfx, x0, y0, 1);
+            if (direct) {
+                if (x0 >= 0 && y0 >= 0 && x0 < width && y0 < height) {
+                    gfx->index8->pixels[(size_t)y0 * gfx->index8->surface.stride +
+                                        (size_t)x0] = gfx->index8->draw_index;
+                }
+            } else {
+                gfx_draw_hline_shade_clipped(gfx, x0, y0, 1);
+            }
         }
         if (x0 == x1 && y0 == y1) {
             break;
@@ -1008,6 +1102,25 @@ void solar_os_gfx_line(solar_os_gfx_t *gfx, int x0, int y0, int x1, int y1)
         if (e2 <= dx) {
             err += dx;
             y0 += sy;
+        }
+    }
+    if (direct) {
+        if (touched_left < 0) {
+            touched_left = 0;
+        }
+        if (touched_top < 0) {
+            touched_top = 0;
+        }
+        if (touched_right >= width) {
+            touched_right = width - 1;
+        }
+        if (touched_bottom >= height) {
+            touched_bottom = height - 1;
+        }
+        if (touched_right >= touched_left && touched_bottom >= touched_top) {
+            gfx_mark_index8_dirty_rect(gfx, touched_left, touched_top,
+                                       touched_right - touched_left + 1,
+                                       touched_bottom - touched_top + 1);
         }
     }
     gfx_mark_dirty(gfx);
