@@ -961,6 +961,7 @@ sources = [
   "services/solar_os_map_osm.c",
   "services/solar_os_map_fetch.c",
   "services/solar_os_map_http.c",
+  "services/solar_os_map_base.c",
 ]
 requires = ["esp_timer", "heap"]
 
