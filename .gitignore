@@ -105,3 +105,4 @@ tests/host/ssd1306_named_bus_test
 tests/host/reticulum_hdlc_test
 tests/host/reticulum_lora_frame_test
 tests/host/lxmf_format_test
+tests/host/*_test
