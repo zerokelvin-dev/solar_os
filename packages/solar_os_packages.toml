@@ -317,6 +317,11 @@ label = "Inbox"
 category = "Messaging"
 members = ["app_inbox"]
 
+[groups.places]
+label = "Places"
+category = "Messaging"
+members = ["service_places"]
+
 [groups.contacts]
 label = "Contacts"
 category = "Messaging"
@@ -876,6 +881,20 @@ sources = ["shell/solar_os_shell_hardware.c"]
 label = "service.inbox"
 sources = ["services/solar_os_inbox.c"]
 requires = ["esp_timer", "heap", "nvs_flash"]
+
+[packages.service_geo]
+label = "service.geo"
+sources = ["services/solar_os_map_geo.c"]
+
+[packages.service_places]
+label = "service.places"
+depends = ["service_geo", "service_gnss"]
+sources = [
+  "services/solar_os_places.c",
+  "services/solar_os_places_gnss.c",
+  "shell/solar_os_shell_places.c",
+]
+requires = ["esp_timer", "heap"]
 
 [packages.service_contacts]
 label = "service.contacts"

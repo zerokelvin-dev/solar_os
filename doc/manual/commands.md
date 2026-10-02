@@ -115,6 +115,17 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `inbox` | `inbox clear` | Remove every message. |
 | `inbox` | `inbox post <source> <message>` | Post a message from a shell script or for testing. |
 | `inbox` | `inbox notify [on\|off\|test]` | Show, persist, disable, or test the Inbox notification sound. It defaults to on and is unavailable on boards without audio output. |
+| `places` | `places status` | Show the point and path counts against their capacities. |
+| `places` | `places list` | List every plotted point, newest first. |
+| `places` | `places add <label> <latitude> <longitude>` | Store a waypoint at decimal-degree coordinates. |
+| `places` | `places remove <id>` | Remove one point by its decimal ID. |
+| `places` | `places clear [source]` | Remove every point, or every point from one source. |
+| `places` | `places fix` | Publish the current GNSS position as your own point. |
+| `places` | `places path add <from-id> <to-id> [label]` | Draw a line between two points, held as references so it follows them. |
+| `places` | `places path list` | List every path. |
+| `places` | `places path remove <id>` | Remove one path by its decimal ID. |
+| `places` | `places path clear <source>` | Remove every path from one source. |
+| `places` | `places help` | Print every `places` usage form. |
 | `contacts` | `contacts` | Open the searchable provider-neutral contact browser. |
 | `contacts` | `contacts status` | Show contact, endpoint, persistence, PSRAM, and opaque-credential counts. |
 | `contacts` | `contacts list [all\|discovered\|trusted\|blocked]` | List contacts, optionally filtered by endpoint trust. |
