@@ -507,10 +507,20 @@ label = "T-Deck keyboard"
 category = "Expansion hardware"
 members = ["expansion_tdeck_keyboard"]
 
+[groups.stc8h_keyboard]
+label = "STC8H companion-MCU keypad"
+category = "Expansion hardware"
+members = ["expansion_stc8h_keyboard"]
+
 [groups.ublox_mia_m10q]
 label = "u-blox MIA-M10Q GNSS receiver"
 category = "Expansion hardware"
 members = ["ublox_mia_m10q"]
+
+[groups.nmea_gnss]
+label = "NMEA 0183 GNSS receiver"
+category = "Expansion hardware"
+members = ["nmea_gnss"]
 
 [groups.sim7670]
 label = "SIM7670 LTE modem and GNSS receiver"
@@ -656,6 +666,11 @@ members = ["driver_mgc3130"]
 label = "PCF85063 real-time clock"
 category = "Expansion hardware"
 members = ["driver_pcf85063"]
+
+[groups.pcf8563]
+label = "PCF8563 real-time clock"
+category = "Expansion hardware"
+members = ["driver_pcf8563"]
 
 [groups.shtc3]
 label = "SHTC3 environmental sensor"
@@ -1546,6 +1561,19 @@ sources = [
 requires = ["esp_driver_i2c"]
 capabilities = ["expansion_i2c"]
 
+[packages.expansion_stc8h_keyboard]
+label = "expansion.stc8h-keyboard"
+targets = ["esp32s3"]
+expansion_drivers = ["solar_os_stc8h_keyboard_expansion_driver"]
+depends = ["service_expansion", "service_i2c", "service_pwm"]
+sources = [
+  "services/solar_os_cardkb_codec.c",
+  "services/solar_os_stc8h_keyboard.c",
+  "services/solar_os_stc8h_keyboard_driver.c",
+]
+requires = ["esp_driver_i2c", "esp_driver_gpio", "esp_timer"]
+capabilities = ["expansion_i2c", "pwm"]
+
 [packages.ublox_mia_m10q]
 label = "expansion.ublox-mia-m10q"
 targets = ["esp32", "esp32s3"]
@@ -1555,6 +1583,19 @@ sources = [
   "drivers/ubx.c",
   "services/solar_os_ublox_mia_m10q.c",
   "services/solar_os_ublox_mia_m10q_driver.c",
+]
+requires = ["esp_timer"]
+capabilities = ["expansion_uart"]
+
+[packages.nmea_gnss]
+label = "expansion.nmea"
+targets = ["esp32", "esp32s3"]
+expansion_drivers = ["solar_os_nmea_gnss_expansion_driver"]
+depends = ["service_expansion", "service_gnss", "service_uart"]
+sources = [
+  "drivers/nmea.c",
+  "services/solar_os_nmea_gnss.c",
+  "services/solar_os_nmea_gnss_driver.c",
 ]
 requires = ["esp_timer"]
 capabilities = ["expansion_uart"]
@@ -2020,6 +2061,18 @@ sources = [
   "drivers/rtc_pcf85063.c",
   "services/solar_os_pcf85063.c",
   "services/solar_os_pcf85063_driver.c",
+]
+capabilities = ["i2c"]
+
+[packages.driver_pcf8563]
+label = "driver.pcf8563"
+targets = ["esp32", "esp32s3"]
+expansion_drivers = ["solar_os_pcf8563_expansion_driver"]
+depends = ["service_expansion", "service_i2c", "service_rtc"]
+sources = [
+  "drivers/rtc_pcf8563.c",
+  "services/solar_os_pcf8563.c",
+  "services/solar_os_pcf8563_driver.c",
 ]
 capabilities = ["i2c"]
 
