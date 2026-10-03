@@ -186,8 +186,11 @@ bool solar_os_map_ring_wanted(const solar_os_map_cull_t *cull,
      *
      * A ring whose edge is nowhere near the view keeps both: the middle of
      * a continent is reliably land however crudely its coast was drawn.
+     * Borders are kept too: a border a little off is still the only one
+     * there is, and a line cannot flood anything.
      */
-    if (cull->coarse &&
+    if (cull->coarse && ring->klass != SOLAR_OS_MAP_CLASS_BOUNDARY &&
+        ring->klass != SOLAR_OS_MAP_CLASS_REGION &&
         map_ring_edge_in_view(ring, view, cull->lat_min, cull->lat_max,
                               cull->lon_half)) {
         return false;
