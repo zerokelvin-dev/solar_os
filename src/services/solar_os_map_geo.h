@@ -89,6 +89,22 @@ void solar_os_map_cell_corner(int32_t lat_e7,
                               int32_t *corner_lat_e7,
                               int32_t *corner_lon_e7);
 
+/*
+ * The same for a cell of another size, which must divide a degree into
+ * whole hundredths so its corner can still be named: a finer tier of map
+ * is kept in smaller cells than the quarter degree.
+ */
+void solar_os_map_cell_corner_sized(int32_t lat_e7,
+                                    int32_t lon_e7,
+                                    int32_t cell_e7,
+                                    int32_t *corner_lat_e7,
+                                    int32_t *corner_lon_e7);
+void solar_os_map_cell_name_sized(int32_t lat_e7,
+                                  int32_t lon_e7,
+                                  int32_t cell_e7,
+                                  char *name,
+                                  size_t capacity);
+
 /* The shorter way round from one longitude to another, in 1e7 degrees. */
 int32_t solar_os_map_relative_lon_delta(int32_t from_e7, int32_t to_e7);
 

@@ -135,7 +135,8 @@ bool solar_os_map_ring_wanted(const solar_os_map_cull_t *cull,
      * however many pieces there are: a row's far shore, off the screen to
      * one side, is what decides which side of the near one is wet.
      */
-    const bool edge_piece = ring->klass == SOLAR_OS_MAP_CLASS_WATER_EDGE;
+    const bool edge_piece = ring->klass == SOLAR_OS_MAP_CLASS_WATER_EDGE ||
+                            ring->klass == SOLAR_OS_MAP_CLASS_WATER_SEAM;
     const int32_t low = solar_os_map_relative_lon(view, ring->lon_min);
     const int32_t high = solar_os_map_relative_lon(view, ring->lon_max);
     /* A ring straddling the far meridian comes back inverted, and has to be
@@ -281,7 +282,8 @@ size_t solar_os_map_water_crossings(const solar_os_map_view_t *view,
     solar_os_map_ring_t ring;
     while (solar_os_map_geometry_next(geometry, &cursor, &ring)) {
         bool outline = true;
-        if (ring.klass != SOLAR_OS_MAP_CLASS_WATER_EDGE ||
+        if ((ring.klass != SOLAR_OS_MAP_CLASS_WATER_EDGE &&
+             ring.klass != SOLAR_OS_MAP_CLASS_WATER_SEAM) ||
             !solar_os_map_ring_wanted(cull, view, geometry, &ring, &outline)) {
             continue;
         }

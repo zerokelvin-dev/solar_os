@@ -63,13 +63,14 @@ map fetch 43.6532 -79.3832
 ```
 
 A cell is fetched a tier at a time, coarsest first, each its own request and
-its own file, so nothing is asked for before it would be drawn:
+its own file, so nothing is asked for before it would be drawn. A finer tier
+comes in smaller cells, about a screen wide where it starts to be drawn:
 
-| Tier | Asks for | Kept as | Drawn from |
-| --- | --- | --- | --- |
-| base | water areas, rivers, railways, motorways down to secondary | `<cell>.bin` | any scale |
-| minor | tertiary roads | `<cell>.minor.bin` | 45 metres a pixel |
-| streets | residential, unclassified and living streets | `<cell>.streets.bin` | 32 metres a pixel |
+| Tier | Asks for | Cell | Kept as | Drawn from |
+| --- | --- | --- | --- | --- |
+| base | water areas, rivers, railways, motorways down to secondary | 0.25° | `<cell>.bin` | any scale |
+| minor | tertiary roads | 0.25° | `<cell>.minor.bin` | 45 metres a pixel |
+| streets | residential, unclassified and living streets | 0.05° | `<cell>.streets.bin` | 32 metres a pixel |
 
 `map fetch <cell> minor` and `map fetch <cell> streets` ask for the finer
 tiers; without a tier word it fetches the base. Within the base, motorways
@@ -79,11 +80,22 @@ neighbouring cells change together. The figures are the map's own Mercator
 scale; the scale bar shows ground distance, which is smaller away from the
 equator (256 reads as about 185 m/px at Toronto).
 
-Measured on the Toronto cell `n4350w07950`, the base is about 11 MB of JSON
-and 1.6 MB on the wire, most of it the lake's edge; the minor roads are
-1.9 MB and 0.3 MB; the streets 9.8 MB and 1.6 MB. A half-degree base is four
-times the size and a whole degree too large to keep, which is why the cell
-stays a quarter of a degree for every tier.
+Each answer is cut to its cell by the server, so a lake as large as Lake
+Ontario sends only the shore inside the cell rather than all of it. The
+base also asks which water areas hold each corner of the cell. A shore the
+border cut is closed along the border wherever it lies in water: starting
+from the south-west corner and going round, the border changes between
+water and land at every shore that meets it, and the other three corners
+check the walk. A walk they disagree with is left out, so a cell is never
+flooded on a guess.
+
+What is kept is simplified to what the tier is drawn at: water, roads and
+the minor roads to within 10 metres, rail to 15 and streets to 5. The
+minor and street tiers are asked for without their tags, since the tier
+already says what they are. Measured on the Toronto cell `n4350w07950`, the
+water alone comes down from about 810 KB to 240 KB, and a quarter-degree of
+streets that was about 1.6 MB arrives as twenty-five cells of a few tens of
+kilobytes.
 
 The answer is asked for deflated. A dense cell is about 13 MB of JSON and
 under 2 MB on the wire, which is the difference between a fetch that

@@ -169,11 +169,24 @@ int32_t solar_os_map_relative_lon(const solar_os_map_view_t *view,
 
 /* Rounds towards minus infinity, so a cell south or west of zero belongs to
  * the cell below it rather than the one above. */
-static int32_t map_cell_floor(int32_t value_e7)
+static int32_t map_cell_floor(int32_t value_e7, int32_t cell)
 {
-    const int32_t cell = SOLAR_OS_MAP_CELL_E7;
     const int32_t down = value_e7 / cell;
     return (value_e7 < 0 && value_e7 % cell != 0) ? down - 1 : down;
+}
+
+void solar_os_map_cell_corner_sized(int32_t lat_e7,
+                                    int32_t lon_e7,
+                                    int32_t cell_e7,
+                                    int32_t *corner_lat_e7,
+                                    int32_t *corner_lon_e7)
+{
+    if (corner_lat_e7 != NULL) {
+        *corner_lat_e7 = map_cell_floor(lat_e7, cell_e7) * cell_e7;
+    }
+    if (corner_lon_e7 != NULL) {
+        *corner_lon_e7 = map_cell_floor(lon_e7, cell_e7) * cell_e7;
+    }
 }
 
 void solar_os_map_cell_corner(int32_t lat_e7,
@@ -181,12 +194,8 @@ void solar_os_map_cell_corner(int32_t lat_e7,
                               int32_t *corner_lat_e7,
                               int32_t *corner_lon_e7)
 {
-    if (corner_lat_e7 != NULL) {
-        *corner_lat_e7 = map_cell_floor(lat_e7) * SOLAR_OS_MAP_CELL_E7;
-    }
-    if (corner_lon_e7 != NULL) {
-        *corner_lon_e7 = map_cell_floor(lon_e7) * SOLAR_OS_MAP_CELL_E7;
-    }
+    solar_os_map_cell_corner_sized(lat_e7, lon_e7, SOLAR_OS_MAP_CELL_E7,
+                                   corner_lat_e7, corner_lon_e7);
 }
 
 bool solar_os_map_cell_parse(const char *name,
@@ -234,17 +243,18 @@ bool solar_os_map_cell_parse(const char *name,
     return true;
 }
 
-void solar_os_map_cell_name(int32_t lat_e7,
-                            int32_t lon_e7,
-                            char *name,
-                            size_t capacity)
+void solar_os_map_cell_name_sized(int32_t lat_e7,
+                                  int32_t lon_e7,
+                                  int32_t cell_e7,
+                                  char *name,
+                                  size_t capacity)
 {
     if (name == NULL || capacity == 0U) {
         return;
     }
     int32_t lat = 0;
     int32_t lon = 0;
-    solar_os_map_cell_corner(lat_e7, lon_e7, &lat, &lon);
+    solar_os_map_cell_corner_sized(lat_e7, lon_e7, cell_e7, &lat, &lon);
     /* Hundredths of a degree, which is as fine as any cell corner can be. */
     const long centi_lat = (long)(lat / 100000);
     const long centi_lon = (long)(lon / 100000);
@@ -253,6 +263,15 @@ void solar_os_map_cell_name(int32_t lat_e7,
                    centi_lat < 0 ? -centi_lat : centi_lat,
                    centi_lon < 0 ? 'w' : 'e',
                    centi_lon < 0 ? -centi_lon : centi_lon);
+}
+
+void solar_os_map_cell_name(int32_t lat_e7,
+                            int32_t lon_e7,
+                            char *name,
+                            size_t capacity)
+{
+    solar_os_map_cell_name_sized(lat_e7, lon_e7, SOLAR_OS_MAP_CELL_E7, name,
+                                 capacity);
 }
 
 int32_t solar_os_map_relative_lon_delta(int32_t from_e7, int32_t to_e7)

@@ -82,7 +82,7 @@ typedef struct {
      * filled. */
     uint32_t *wet;
     /* The cell under the reticle, and what is known about each tier of it. */
-    char cell_name[SOLAR_OS_MAP_CELL_NAME_MAX];
+    char cell_name[SOLAR_OS_MAP_LAYER_NAME_MAX];
     bool tier_kept[SOLAR_OS_MAP_TIER_COUNT];
     bool tier_loaded[SOLAR_OS_MAP_TIER_COUNT];
     /* A fetch runs elsewhere; these notice when it has finished. */
@@ -537,7 +537,8 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
 
     /* The water goes down first, under the roads, whatever order the
      * pieces of its edge arrived in. */
-    if (geometry->class_rings[SOLAR_OS_MAP_CLASS_WATER_EDGE] != 0U &&
+    if ((geometry->class_rings[SOLAR_OS_MAP_CLASS_WATER_EDGE] != 0U ||
+         geometry->class_rings[SOLAR_OS_MAP_CLASS_WATER_SEAM] != 0U) &&
         map_app_colour(gfx)) {
         map_app_fill_water_edges(gfx, view, geometry, &cull);
     }
@@ -546,7 +547,9 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
     solar_os_map_ring_t ring;
     while (solar_os_map_geometry_next(geometry, &cursor, &ring)) {
         bool outline = true;
-        if (!solar_os_map_ring_wanted(&cull, view, geometry, &ring, &outline)) {
+        /* A seam only closes a shore for the fill; it is not a shore. */
+        if (ring.klass == SOLAR_OS_MAP_CLASS_WATER_SEAM ||
+            !solar_os_map_ring_wanted(&cull, view, geometry, &ring, &outline)) {
             continue;
         }
         solar_os_map_span_t span;
@@ -707,9 +710,9 @@ static void map_app_tier_file(solar_os_map_tier_t tier, char *file, size_t len)
  * however many maps are kept, one kept is never read as absent. */
 static void map_app_cell_refresh(void)
 {
-    char cell[SOLAR_OS_MAP_CELL_NAME_MAX];
-    solar_os_map_cell_name(map_app.center_lat_e7, map_app.center_lon_e7, cell,
-                           sizeof(cell));
+    /* Keyed by the finest tier's cell, which names every coarser one. */
+    char cell[SOLAR_OS_MAP_LAYER_NAME_MAX];
+    map_app_tier_file(SOLAR_OS_MAP_TIER_COUNT - 1, cell, sizeof(cell));
     const uint32_t generation = solar_os_map_layer_generation();
     if (strcmp(cell, map_app.cell_name) == 0 &&
         generation == map_app.cell_generation) {
@@ -731,28 +734,24 @@ static void map_app_cell_refresh(void)
  * fetched over a network. -1 when a press has nothing to do, so nothing
  * that would not be drawn is ever asked for.
  */
-static int map_app_cell_width(const solar_os_map_view_t *view)
+static int map_app_cell_width(const solar_os_map_view_t *view,
+                              solar_os_map_tier_t tier)
 {
+    const int32_t size = solar_os_map_tier_cell_e7(tier);
     int32_t corner_lat = 0;
     int32_t corner_lon = 0;
-    solar_os_map_cell_corner(map_app.center_lat_e7, map_app.center_lon_e7,
-                             &corner_lat, &corner_lon);
+    solar_os_map_cell_corner_sized(map_app.center_lat_e7, map_app.center_lon_e7,
+                                   size, &corner_lat, &corner_lon);
     int left = 0;
     int right = 0;
     int y = 0;
     solar_os_map_project_raw(view, corner_lat, corner_lon, &left, &y);
-    solar_os_map_project_raw(view, corner_lat, corner_lon + SOLAR_OS_MAP_CELL_E7,
-                             &right, &y);
+    solar_os_map_project_raw(view, corner_lat, corner_lon + size, &right, &y);
     return right - left;
 }
 
 static int map_app_next_tier(const solar_os_map_view_t *view, bool *kept)
 {
-    /* The outline and the press share this, so a cell too small to aim at
-     * is neither outlined nor acted on. */
-    if (map_app_cell_width(view) < MAP_APP_CELL_MIN_PX) {
-        return -1;
-    }
     map_app_cell_refresh();
     for (int tier = 0; tier < SOLAR_OS_MAP_TIER_COUNT; tier++) {
         if (view->meters_per_col >
@@ -761,6 +760,12 @@ static int map_app_next_tier(const solar_os_map_view_t *view, bool *kept)
         }
         if (map_app.tier_loaded[tier]) {
             continue;
+        }
+        /* The outline and the press share this, so a cell too small to aim
+         * at is neither outlined nor acted on. */
+        if (map_app_cell_width(view, (solar_os_map_tier_t)tier) <
+            MAP_APP_CELL_MIN_PX) {
+            return -1;
         }
         *kept = map_app.tier_kept[tier];
         return (*kept || map_app_online()) ? tier : -1;
@@ -806,17 +811,22 @@ static void map_app_draw_cell(solar_os_gfx_t *gfx,
         return;
     }
 
+    /* The cell drawn is the one the press would act on, whose size is its
+     * tier's. */
+    const int32_t size =
+        solar_os_map_tier_cell_e7(tier < 0 ? SOLAR_OS_MAP_TIER_BASE
+                                           : (solar_os_map_tier_t)tier);
     int32_t corner_lat = 0;
     int32_t corner_lon = 0;
-    solar_os_map_cell_corner(map_app.center_lat_e7, map_app.center_lon_e7,
-                             &corner_lat, &corner_lon);
+    solar_os_map_cell_corner_sized(map_app.center_lat_e7, map_app.center_lon_e7,
+                                   size, &corner_lat, &corner_lon);
     int left = 0;
     int bottom = 0;
     int right = 0;
     int top = 0;
     solar_os_map_project_raw(view, corner_lat, corner_lon, &left, &bottom);
-    solar_os_map_project_raw(view, corner_lat + SOLAR_OS_MAP_CELL_E7,
-                             corner_lon + SOLAR_OS_MAP_CELL_E7, &right, &top);
+    solar_os_map_project_raw(view, corner_lat + size, corner_lon + size, &right,
+                             &top);
     const int wide = right - left;
 
     top += MAP_APP_HEADER_H;
@@ -1502,7 +1512,8 @@ static void map_app_cell_press(solar_os_context_t *ctx)
     if (tier < 0) {
         const bool finer =
             !map_app.tier_loaded[SOLAR_OS_MAP_TIER_COUNT - 1];
-        map_app_say("%s", map_app_cell_width(&view) < MAP_APP_CELL_MIN_PX
+        map_app_say("%s", map_app_cell_width(&view, SOLAR_OS_MAP_TIER_BASE) <
+                                  MAP_APP_CELL_MIN_PX
                               ? "zoom in to pick a cell"
                           : !finer ? "all detail loaded here"
                           : map_app_online() ? "zoom in for more detail"
