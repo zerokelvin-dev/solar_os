@@ -325,7 +325,7 @@ members = ["service_places"]
 [groups.map]
 label = "Map"
 category = "Messaging"
-members = ["service_map"]
+members = ["app_map"]
 
 [groups.contacts]
 label = "Contacts"
@@ -2353,6 +2353,14 @@ depends = ["service_inbox"]
 sources = [
   "apps/solar_os_inbox_app.c",
   "shell/solar_os_shell_inbox.c",
+]
+
+[packages.app_map]
+label = "app.map"
+depends = ["service_map", "service_places"]
+sources = [
+  "apps/solar_os_map_app.c",
+  "shell/solar_os_shell_map.c",
 ]
 
 [packages.app_contacts]
