@@ -121,9 +121,7 @@ In the app, a tier that is already on the card loads by itself as soon as
 the cell under the reticle is zoomed or panned to a scale that draws it. A
 press of Enter is for the rest: it fetches the coarsest tier drawn at the
 current scale that is not on the card yet. Fetching needs a network path,
-and runs one at a time. The word inside the cell outline says what a press
-will do (`fetch`, `fetch minor roads`, `fetch streets`, or `wait` while a
-fetch is running), and the outline is drawn only while a press would do
+and runs one at a time. The cell is outlined only while a press would fetch
 something. With every tier drawn at this scale on the map, zoom
 in for the next; `map unload` puts a tier away.
 

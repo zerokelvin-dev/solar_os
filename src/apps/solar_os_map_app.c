@@ -840,29 +840,6 @@ static void map_app_draw_cell(solar_os_gfx_t *gfx,
     solar_os_gfx_rect(gfx, left, top, wide, bottom - top);
     solar_os_gfx_set_line_style(gfx, SOLAR_OS_GFX_LINE_SOLID);
     solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
-
-    /* What a press would do, and to which tier. */
-    static const char *const fetch_words[SOLAR_OS_MAP_TIER_COUNT] = {
-        "fetch", "fetch minor roads", "fetch streets",
-    };
-    static const char *const load_words[SOLAR_OS_MAP_TIER_COUNT] = {
-        "load", "load minor roads", "load streets",
-    };
-    const char *action = busy ? "wait"
-                         : kept ? load_words[tier]
-                                : fetch_words[tier];
-    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
-    /* Centred on whatever of the cell is on screen, so the word stays put
-     * as the edges run off it. */
-    const int visible_left = left > 0 ? left : 0;
-    const int visible_right = right < (int)view->cols ? right : (int)view->cols;
-    const int visible_top = top > MAP_APP_HEADER_H ? top : MAP_APP_HEADER_H;
-    const int visible_bottom =
-        bottom < MAP_APP_HEADER_H + area ? bottom : MAP_APP_HEADER_H + area;
-    const int width = (int)solar_os_gfx_text_width(gfx, action);
-    const int x = visible_left + (visible_right - visible_left - width) / 2;
-    const int y = visible_top + (visible_bottom - visible_top) / 2;
-    solar_os_gfx_text(gfx, x, y, action);
 }
 
 /* A reticle at the centre, which panning moves the map under. The gap in
