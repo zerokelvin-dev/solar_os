@@ -46,8 +46,8 @@
 #define MAP_APP_REPEAT_MAX 3
 /* A cell is worth showing between these sizes: any wider and it is the
  * ground underfoot, any narrower and there is nothing to aim at. */
-#define MAP_APP_CELL_MAX_SCREENS 3
-#define MAP_APP_CELL_MIN_DIVISOR 4
+/* Narrower than this on screen, a cell is too small to aim at. */
+#define MAP_APP_CELL_MIN_PX 20
 
 /*
  * What the frame on the screen was drawn from. A tick finding all of it
@@ -731,8 +731,28 @@ static void map_app_cell_refresh(void)
  * fetched over a network. -1 when a press has nothing to do, so nothing
  * that would not be drawn is ever asked for.
  */
+static int map_app_cell_width(const solar_os_map_view_t *view)
+{
+    int32_t corner_lat = 0;
+    int32_t corner_lon = 0;
+    solar_os_map_cell_corner(map_app.center_lat_e7, map_app.center_lon_e7,
+                             &corner_lat, &corner_lon);
+    int left = 0;
+    int right = 0;
+    int y = 0;
+    solar_os_map_project_raw(view, corner_lat, corner_lon, &left, &y);
+    solar_os_map_project_raw(view, corner_lat, corner_lon + SOLAR_OS_MAP_CELL_E7,
+                             &right, &y);
+    return right - left;
+}
+
 static int map_app_next_tier(const solar_os_map_view_t *view, bool *kept)
 {
+    /* The outline and the press share this, so a cell too small to aim at
+     * is neither outlined nor acted on. */
+    if (map_app_cell_width(view) < MAP_APP_CELL_MIN_PX) {
+        return -1;
+    }
     map_app_cell_refresh();
     for (int tier = 0; tier < SOLAR_OS_MAP_TIER_COUNT; tier++) {
         if (view->meters_per_col >
@@ -798,16 +818,6 @@ static void map_app_draw_cell(solar_os_gfx_t *gfx,
     solar_os_map_project_raw(view, corner_lat + SOLAR_OS_MAP_CELL_E7,
                              corner_lon + SOLAR_OS_MAP_CELL_E7, &right, &top);
     const int wide = right - left;
-    /*
-     * Shown only while the cell is something you could act on. Wider than a
-     * couple of screens it is the ground underfoot rather than a cell, and
-     * narrower than a quarter of one there is nothing to read inside it and
-     * nothing worth aiming at.
-     */
-    if (wide > (int)view->cols * MAP_APP_CELL_MAX_SCREENS ||
-        wide < (int)view->cols / MAP_APP_CELL_MIN_DIVISOR) {
-        return;
-    }
 
     top += MAP_APP_HEADER_H;
     bottom += MAP_APP_HEADER_H;
@@ -1119,6 +1129,30 @@ static bool map_app_frame_is_current(void)
     return same;
 }
 
+/*
+ * Every tier of the cell under the reticle that is kept and drawn at this
+ * scale goes on the map without being asked: a press is for fetching, and
+ * a map already on the card only has to be zoomed or panned into.
+ */
+static void map_app_load_kept_tiers(const solar_os_map_view_t *view)
+{
+    /* At most one load per tier, so a layer that loads and is put straight
+     * back by the memory budget cannot keep this frame loading it. */
+    for (int round = 0; round < SOLAR_OS_MAP_TIER_COUNT; round++) {
+        bool kept = false;
+        const int tier = map_app_next_tier(view, &kept);
+        if (tier < 0 || !kept) {
+            return;
+        }
+        char file[SOLAR_OS_MAP_LAYER_NAME_MAX];
+        map_app_tier_file((solar_os_map_tier_t)tier, file, sizeof(file));
+        if (solar_os_map_layer_load_named(file) != ESP_OK) {
+            map_app_say("%s would not load", file);
+            return;
+        }
+    }
+}
+
 static void map_app_render(solar_os_context_t *ctx)
 {
     solar_os_gfx_t *gfx = solar_os_context_gfx(ctx);
@@ -1129,6 +1163,7 @@ static void map_app_render(solar_os_context_t *ctx)
     const int height = (int)solar_os_gfx_height(gfx);
     const int area = map_app_area_height(gfx);
     const solar_os_map_view_t view = map_app_view(gfx);
+    map_app_load_kept_tiers(&view);
 
     /*
      * Sea under everything, but only where something in view can say where
@@ -1467,7 +1502,9 @@ static void map_app_cell_press(solar_os_context_t *ctx)
     if (tier < 0) {
         const bool finer =
             !map_app.tier_loaded[SOLAR_OS_MAP_TIER_COUNT - 1];
-        map_app_say("%s", !finer ? "all detail loaded here"
+        map_app_say("%s", map_app_cell_width(&view) < MAP_APP_CELL_MIN_PX
+                              ? "zoom in to pick a cell"
+                          : !finer ? "all detail loaded here"
                           : map_app_online() ? "zoom in for more detail"
                                              : "more detail needs a network");
         return;
