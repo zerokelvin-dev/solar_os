@@ -112,6 +112,11 @@ void solar_os_shell_cmd_meshcore(solar_os_context_t *ctx,
                                  int argc,
                                  char **argv);
 #endif
+#if SOLAR_OS_PACKAGE_JOB_RETICULUM
+void solar_os_shell_cmd_reticulum(solar_os_context_t *ctx,
+                                  int argc,
+                                  char **argv);
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_NET
 void solar_os_shell_cmd_netscan(solar_os_context_t *ctx, int argc, char **argv);
 #endif
