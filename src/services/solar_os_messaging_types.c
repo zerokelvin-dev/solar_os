@@ -10,6 +10,8 @@ const char *solar_os_messaging_provider_name(
         return "meshcore";
     case SOLAR_OS_MESSAGING_PROVIDER_LINK:
         return "link";
+    case SOLAR_OS_MESSAGING_PROVIDER_RETICULUM:
+        return "reticulum";
     default:
         return "unknown";
     }

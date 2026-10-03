@@ -1187,6 +1187,37 @@ While the job runs, `network` and `network status` show `ppp-<port>` with its
 uplink, downstream, or peer role. Only the uplink role appears in the Network
 Settings priority list.
 
+## reticulum
+
+Reticulum network stack over a TCP connection to an existing Reticulum node,
+over a LoRa packet radio framed as an RNode frames the air, or both.
+
+Usage:
+
+```text
+job start reticulum <host> [port]
+job start reticulum lora <radio> <profile>
+job start reticulum <host> [port] lora <radio> <profile>
+job stop reticulum
+job status reticulum
+reticulum status
+```
+
+Example:
+
+```text
+job start reticulum rns.example.net 4242
+reticulum announce
+reticulum announces
+```
+
+The job requires PSRAM, an SD-protocol storage volume, and Wi-Fi. It connects
+to a Reticulum `TCPServerInterface` (default port 4242), reconnects with
+backoff, and runs the protocol loop on a 12288-byte internal worker stack whose
+minimum watermark is reported by `reticulum status`. See
+[reticulum.md](reticulum.md) for identity, storage, and interoperability
+details.
+
 ## slip
 
 IPv4 SLIP gateway on a byte-stream port. This is intended for retro machines,
