@@ -448,6 +448,13 @@ if(SOLAR_OS_PACKAGE_SERVICE_MESHCORE)
     )
 endif()
 
+if(SOLAR_OS_PACKAGE_SERVICE_RETICULUM)
+    list(APPEND SOLAR_OS_EXTRA_INCLUDE_DIRS
+        "../src/vendor/microreticulum"
+        "../src/vendor/meshcore/ed25519"
+    )
+endif()
+
 if(SOLAR_OS_PACKAGE_BHI260AP)
     list(APPEND SOLAR_OS_EXTRA_INCLUDE_DIRS "vendor/bhy2")
 endif()
@@ -496,6 +503,18 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 if(SOLAR_OS_BOARD_GENERATED)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         SOLAR_OS_BOARD_GENERATED=1
+    )
+endif()
+
+if(SOLAR_OS_PACKAGE_SERVICE_RETICULUM)
+    if(NOT CONFIG_COMPILER_CXX_EXCEPTIONS)
+        message(FATAL_ERROR
+            "service.reticulum needs CONFIG_COMPILER_CXX_EXCEPTIONS=y")
+    endif()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        USTORE_USE_UNIVERSALFS=1
+        RNS_USE_FS=1
+        RNS_LOG_LEVEL=4
     )
 endif()
 

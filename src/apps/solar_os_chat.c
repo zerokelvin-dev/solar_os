@@ -412,6 +412,7 @@ static void chat_refresh_conversations(void)
         SOLAR_OS_MESSAGING_PROVIDER_MESHCORE,
         SOLAR_OS_MESSAGING_PROVIDER_GATEWAY,
         SOLAR_OS_MESSAGING_PROVIDER_LINK,
+        SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
     };
     for (size_t provider = 0;
          provider < sizeof(provider_order) / sizeof(provider_order[0]);
@@ -1146,6 +1147,7 @@ static size_t chat_build_channel_rows(chat_app_channel_row_t *rows,
         SOLAR_OS_MESSAGING_PROVIDER_MESHCORE,
         SOLAR_OS_MESSAGING_PROVIDER_GATEWAY,
         SOLAR_OS_MESSAGING_PROVIDER_LINK,
+        SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
     };
     for (size_t provider = 0;
          provider < sizeof(provider_order) / sizeof(provider_order[0]) &&
@@ -1661,7 +1663,7 @@ static void chat_show_status(void)
                         (unsigned)status.persistent_capacity);
     for (solar_os_messaging_provider_id_t provider =
              SOLAR_OS_MESSAGING_PROVIDER_GATEWAY;
-         provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK;
+         provider <= SOLAR_OS_MESSAGING_PROVIDER_RETICULUM;
          provider++) {
         solar_os_messaging_provider_status_t provider_status;
         if (solar_os_messaging_provider_get_status(
@@ -2030,6 +2032,10 @@ static bool chat_parse_selector(const char *selector)
     }
     if (strcasecmp(selector, "link") == 0) {
         chat_app.filter_provider = SOLAR_OS_MESSAGING_PROVIDER_LINK;
+        return true;
+    }
+    if (strcasecmp(selector, "reticulum") == 0) {
+        chat_app.filter_provider = SOLAR_OS_MESSAGING_PROVIDER_RETICULUM;
         return true;
     }
     char *end = NULL;
