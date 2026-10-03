@@ -84,6 +84,28 @@ static const solar_os_radio_profile_t radio_builtin_profiles[] = {
         },
     },
     {
+        /* Reticulum over LoRa for the 902-928 MHz band, framed as an RNode
+         * frames it: explicit header, CRC, sync word 0x12. The numbers are a
+         * common RNode setting for the band; they only have to match the
+         * peer's, which is told the same ones in its interface config. */
+        .name = "reticulum-us915",
+        .builtin = true,
+        .config = {
+            .frequency_hz = 915000000,
+            .modulation = SOLAR_OS_RADIO_MODULATION_LORA,
+            .rx_bandwidth_hz = 125000,
+            .spreading_factor = 8,
+            .coding_rate_denominator = 5,
+            .preamble_len = 18,
+            .sync_word_len = 1,
+            .sync_word = {0x12},
+            .tx_power_dbm = 14,
+            .crc_enabled = true,
+            .variable_length = true,
+            .payload_length = 255,
+        },
+    },
+    {
         .name = "lora-eu868",
         .builtin = true,
         .config = {
