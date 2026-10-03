@@ -123,7 +123,8 @@ esp_err_t solar_os_map_download(const solar_os_map_download_t *what)
         solar_os_inflate_t *reader = NULL;
         error = solar_os_inflate_open(answer.file, &reader);
         if (error == ESP_OK) {
-            error = what->pack(reader, what->klass, &packed, &packed_size);
+            error = what->pack(reader, what->klass, what->pack_context, &packed,
+                               &packed_size);
             solar_os_inflate_close(reader);
         }
         SOLAR_OS_LOGI(TAG, "%s: %u bytes read into %u packed, %s", what->name,

@@ -610,6 +610,58 @@ static void test_water_edge_pieces_cross_each_row_evenly(void)
 }
 
 /*
+ * A lake cut by a cell's border is closed along the border by seams, which
+ * the fill counts like any shore: the same square, its east and west sides
+ * now seams, still crosses every row evenly and fills as tall as before.
+ */
+static void test_seams_close_a_cut_lake(void)
+{
+    static const int32_t north[] = {430100000, -790100000, 430100000, -789900000};
+    static const int32_t east[] = {430100000, -789900000, 429900000, -789900000};
+    static const int32_t south[] = {429900000, -789900000, 429900000, -790100000};
+    static const int32_t west[] = {429900000, -790100000, 430100000, -790100000};
+    const int32_t *const rings[] = {north, east, south, west};
+    const uint32_t points[] = {2U, 2U, 2U, 2U};
+    const solar_os_map_class_t klass[] = {
+        SOLAR_OS_MAP_CLASS_WATER_EDGE, SOLAR_OS_MAP_CLASS_WATER_SEAM,
+        SOLAR_OS_MAP_CLASS_WATER_EDGE, SOLAR_OS_MAP_CLASS_WATER_SEAM,
+    };
+    const bool open[] = {true, true, true, true};
+    size_t size = 0U;
+    uint8_t *data = pack_rings(rings, points, klass, open, 4U, &size);
+    solar_os_map_geometry_t geometry;
+    assert(solar_os_map_geometry_parse(data, size, &geometry) == ESP_OK);
+    solar_os_map_view_t view = world_view();
+    view.center_lat_e7 = 430000000;
+    view.center_lon_e7 = -790000000;
+    view.meters_per_col = 100U;
+    solar_os_map_cull_t cull;
+    solar_os_map_cull_prepare(&view, &geometry, &cull);
+    solar_os_map_vertex_t scratch[16];
+    uint32_t crossings[4096];
+    const size_t found = solar_os_map_water_crossings(
+        &view, &geometry, &cull, 10, (int)view.rows, scratch, 16U, crossings,
+        4096U);
+    size_t row_counts[256] = {0};
+    for (size_t i = 0U; i < found; i++) {
+        row_counts[SOLAR_OS_MAP_CROSSING_ROW(crossings[i])]++;
+    }
+    size_t lake_rows = 0U;
+    for (size_t row = 0U; row < view.rows; row++) {
+        assert(row_counts[row] % 2U == 0U);
+        lake_rows += row_counts[row] == 2U;
+    }
+    int x = 0;
+    int north_row = 0;
+    int south_row = 0;
+    solar_os_map_project_raw(&view, 430100000, -790000000, &x, &north_row);
+    solar_os_map_project_raw(&view, 429900000, -790000000, &x, &south_row);
+    const size_t square = (size_t)(south_row - north_row);
+    assert(lake_rows + 1U >= square && lake_rows <= square + 1U);
+    free(data);
+}
+
+/*
  * A piece of a water edge beside the view is kept: the far shore of a row
  * is what decides whether the near side of it is wet, and dropping the
  * piece that holds it would flip every row it crosses.
@@ -751,6 +803,7 @@ int main(void)
     test_a_ring_outside_the_view_goes();
     test_a_water_edge_beside_the_view_is_kept();
     test_water_edge_pieces_cross_each_row_evenly();
+    test_seams_close_a_cut_lake();
     test_road_tiers_come_in_by_scale();
     test_a_class_is_crowded_over_its_own_ground();
     test_a_coarse_edge_in_view_is_dropped();

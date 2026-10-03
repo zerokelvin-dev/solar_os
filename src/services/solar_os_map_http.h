@@ -39,6 +39,7 @@ esp_err_t solar_os_map_answer_event(const solar_os_http_event_t *event,
 /* Turns an answer into packed geometry: the OSM or the GeoJSON reader. */
 typedef esp_err_t (*solar_os_map_pack_fn)(solar_os_inflate_t *reader,
                                           solar_os_map_class_t klass,
+                                          const void *context,
                                           uint8_t **out,
                                           size_t *out_size);
 
@@ -57,6 +58,8 @@ typedef struct {
     /* The class a packer falls back to for anything it cannot name. */
     solar_os_map_class_t klass;
     solar_os_map_pack_fn pack;
+    /* Whatever the packer needs besides the answer, passed through. */
+    const void *pack_context;
     /* Where to write which phase the work has reached, if anywhere. */
     char *progress;
     size_t progress_capacity;

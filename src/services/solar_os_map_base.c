@@ -104,6 +104,16 @@ esp_err_t solar_os_map_base_load(void)
     return first == ESP_ERR_NOT_FOUND ? ESP_ERR_NOT_FOUND : first;
 }
 
+static esp_err_t map_base_pack(solar_os_inflate_t *reader,
+                               solar_os_map_class_t klass,
+                               const void *context,
+                               uint8_t **out,
+                               size_t *out_size)
+{
+    (void)context;
+    return solar_os_map_geojson_read(reader, klass, out, out_size);
+}
+
 /* One layer: asked for, packed and kept, by the one thing that does that. */
 static esp_err_t map_base_one(size_t index)
 {
@@ -121,7 +131,7 @@ static esp_err_t map_base_one(size_t index)
         /* The source answers from a redirect. */
         .follow_redirects = true,
         .klass = map_base_layers[index].klass,
-        .pack = solar_os_map_geojson_read,
+        .pack = map_base_pack,
         .progress = progress,
         .progress_capacity = sizeof(progress),
     };

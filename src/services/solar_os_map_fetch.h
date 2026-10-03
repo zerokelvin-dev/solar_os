@@ -35,6 +35,9 @@ typedef enum {
 /* The coarsest scale, in metres per pixel, at which a tier is drawn. */
 uint32_t solar_os_map_tier_max_mpp(solar_os_map_tier_t tier);
 
+/* How large a tier's cells are, in 1e7 degrees. */
+int32_t solar_os_map_tier_cell_e7(solar_os_map_tier_t tier);
+
 /* The layer name a tier of a cell is kept under, without `.bin`. */
 void solar_os_map_tier_name(int32_t latitude_e7,
                             int32_t longitude_e7,
