@@ -105,13 +105,14 @@ are coloured as themselves: the tags arrive after the geometry, so the class
 is filled in when the element closes. Anything the query does not explain
 falls back to road.
 
-In the app, each press of Enter adds one tier to the cell under the
-reticle: the coarsest tier drawn at the current scale that is not on the
-map yet, loaded if it is kept and fetched if it is not. Fetching needs a
-network path, and runs one at a time. The word inside the cell outline says
-what a press will do (`fetch`, `load`, `fetch streets`, and so on, or `wait`
-while a fetch is running), and the outline is drawn only while a press
-would do something. With every tier drawn at this scale on the map, zoom
+In the app, a tier that is already on the card loads by itself as soon as
+the cell under the reticle is zoomed or panned to a scale that draws it. A
+press of Enter is for the rest: it fetches the coarsest tier drawn at the
+current scale that is not on the card yet. Fetching needs a network path,
+and runs one at a time. The word inside the cell outline says what a press
+will do (`fetch`, `fetch minor roads`, `fetch streets`, or `wait` while a
+fetch is running), and the outline is drawn only while a press would do
+something. With every tier drawn at this scale on the map, zoom
 in for the next; `map unload` puts a tier away.
 
 ## The world, the first time
@@ -303,8 +304,8 @@ cross sits at the centre of the view: panning moves the map under it, so it
 is what you line up with a target when working down from a zoomed-out view.
 Zooming holds the centre, so a target stays under the cross as you go in.
 The cell the reticle sits in is outlined with a dashed line while a press
-would load or fetch a tier of it, and while it is between a quarter of the
-screen and three screens wide. The selected point is boxed and labelled, and the row under
+would load or fetch a tier of it, and while it is at least 20 pixels wide;
+smaller than that it is too small to aim at, and a press does nothing. The selected point is boxed and labelled, and the row under
 the map gives its coordinates, and the distance and bearing from your own
 position when one is known. With nothing selected that row gives the
 reticle's own position and the scale.
