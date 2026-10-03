@@ -23,6 +23,16 @@ void solar_os_memory_free(void *pointer)
     free(pointer);
 }
 
+void *solar_os_memory_realloc(void *pointer,
+                              size_t size,
+                              solar_os_memory_class_t memory_class,
+                              const char *tag)
+{
+    (void)memory_class;
+    (void)tag;
+    return realloc(pointer, size);
+}
+
 /*
  * Overpass shapes every element the same way: geometry first, tags after.
  * Each element here is one class the map draws, plus one the query cannot
@@ -299,6 +309,121 @@ static void test_a_failed_query_is_not_an_empty_one(void)
     fclose(empty);
 }
 
+/*
+ * A cell from 0 to 0.1 degrees each way, with a lake over its southern half:
+ * one piece of shore runs across it, and the server has cut the answer to
+ * the cell, leaving the first position outside at each end and null for
+ * the rest. The corners say south is in water and north is not.
+ */
+static const char CLIPPED[] =
+    "{\"elements\":[\n"
+    "{\"type\":\"relation\",\"id\":1,\"members\":[\n"
+    "{\"type\":\"way\",\"ref\":2,\"role\":\"outer\",\"geometry\":["
+    "null,{\"lat\":0.05,\"lon\":-0.02},{\"lat\":0.05,\"lon\":0.03},"
+    "{\"lat\":0.05,\"lon\":0.07},{\"lat\":0.05,\"lon\":0.12},null]},\n"
+    "{\"type\":\"way\",\"ref\":3,\"role\":\"outer\",\"geometry\":[]}],\n"
+    "\"tags\":{\"natural\":\"water\"}},\n"
+    "{\"type\":\"way\",\"id\":4,\"geometry\":["
+    "{\"lat\":0.08,\"lon\":0.01},{\"lat\":0.08,\"lon\":0.02},{\"lat\":0.08,\"lon\":0.03},"
+    "{\"lat\":0.08,\"lon\":0.04},{\"lat\":0.08,\"lon\":0.05}],"
+    "\"tags\":{\"highway\":\"secondary\"}},\n"
+    "{\"type\":\"area\",\"id\":3600000001},{\"type\":\"corner\",\"id\":1},\n"
+    "{\"type\":\"area\",\"id\":3600000001},{\"type\":\"corner\",\"id\":2},\n"
+    "{\"type\":\"corner\",\"id\":3},\n"
+    "{\"type\":\"corner\",\"id\":4}\n"
+    "]}\n";
+
+static esp_err_t read_cell(const char *answer, const uint8_t corners_override,
+                           uint8_t **out, size_t *out_size)
+{
+    (void)corners_override;
+    FILE *file = write_temp(answer, strlen(answer));
+    solar_os_inflate_t *reader = NULL;
+    assert(solar_os_inflate_open(file, &reader) == ESP_OK);
+    solar_os_map_osm_cell_t cell = {
+        .south = 0, .west = 0, .north = 1000000, .east = 1000000,
+    };
+    cell.tolerance_m[SOLAR_OS_MAP_CLASS_ROAD] = 10U;
+    cell.tolerance_m[SOLAR_OS_MAP_CLASS_WATER_EDGE] = 10U;
+    const esp_err_t error =
+        solar_os_map_osm_read_cell(reader, SOLAR_OS_MAP_CLASS_ROAD, &cell, out,
+                                   out_size);
+    solar_os_inflate_close(reader);
+    fclose(file);
+    return error;
+}
+
+static int32_t point_lat(const uint8_t *packed, uint32_t rings, uint32_t index)
+{
+    return (int32_t)read_u32(&packed[SOLAR_OS_MAP_LAYER_HEADER + rings * 20U +
+                                     index * 8U]);
+}
+
+static int32_t point_lon(const uint8_t *packed, uint32_t rings, uint32_t index)
+{
+    return (int32_t)read_u32(&packed[SOLAR_OS_MAP_LAYER_HEADER + rings * 20U +
+                                     index * 8U + 4U]);
+}
+
+static void test_cut_to_the_cell(void)
+{
+    uint8_t *packed = NULL;
+    size_t size = 0U;
+    assert(read_cell(CLIPPED, 0U, &packed, &size) == ESP_OK);
+    const uint32_t rings = read_u32(&packed[8]);
+    /* The shore, the road, and two stretches of border in water. */
+    assert(rings == 4U);
+    assert(ring_class(packed, 0U) == SOLAR_OS_MAP_CLASS_WATER_EDGE);
+    assert(ring_class(packed, 1U) == SOLAR_OS_MAP_CLASS_ROAD);
+    assert(ring_class(packed, 2U) == SOLAR_OS_MAP_CLASS_WATER_SEAM);
+    assert(ring_class(packed, 3U) == SOLAR_OS_MAP_CLASS_WATER_SEAM);
+
+    /* The shore is cut back to the border at both ends, and its straight
+     * middle simplified away. */
+    assert((ring_word(packed, 0U) & SOLAR_OS_MAP_RING_COUNT_MASK) == 2U);
+    assert(point_lat(packed, rings, 0U) == 500000);
+    assert(point_lon(packed, rings, 0U) == 0);
+    assert(point_lon(packed, rings, 1U) == 1000000);
+
+    /* A straight road keeps only its ends. */
+    assert((ring_word(packed, 1U) & SOLAR_OS_MAP_RING_COUNT_MASK) == 2U);
+
+    /* South-west round to the shore on the east side, and back down from
+     * the shore on the west side: the lake closes along the border. */
+    assert((ring_word(packed, 2U) & SOLAR_OS_MAP_RING_COUNT_MASK) == 3U);
+    assert(point_lat(packed, rings, 4U) == 0 && point_lon(packed, rings, 4U) == 0);
+    assert(point_lat(packed, rings, 5U) == 0 &&
+           point_lon(packed, rings, 5U) == 1000000);
+    assert(point_lat(packed, rings, 6U) == 500000 &&
+           point_lon(packed, rings, 6U) == 1000000);
+    assert((ring_word(packed, 3U) & SOLAR_OS_MAP_RING_COUNT_MASK) == 2U);
+    assert(point_lat(packed, rings, 7U) == 500000 && point_lon(packed, rings, 7U) == 0);
+    assert(point_lat(packed, rings, 8U) == 0 && point_lon(packed, rings, 8U) == 0);
+    free(packed);
+}
+
+/* Corners that disagree with the shore are not believed: no border is
+ * claimed as water, rather than a flooded cell. */
+static void test_corners_that_disagree_close_nothing(void)
+{
+    char answer[sizeof(CLIPPED) + 64];
+    strlcpy(answer, CLIPPED, sizeof(answer));
+    char *third = strstr(answer, "{\"type\":\"corner\",\"id\":3}");
+    assert(third != NULL);
+    const char *wet = "{\"type\":\"area\",\"id\":3600000001},";
+    memmove(third + strlen(wet), third, strlen(third) + 1U);
+    memcpy(third, wet, strlen(wet));
+    uint8_t *packed = NULL;
+    size_t size = 0U;
+    assert(read_cell(answer, 0U, &packed, &size) == ESP_OK);
+    const uint32_t rings = read_u32(&packed[8]);
+    assert(rings == 2U);
+    for (uint32_t ring = 0U; ring < rings; ring++) {
+        assert(ring_class(packed, ring) != SOLAR_OS_MAP_CLASS_WATER_SEAM);
+    }
+    free(packed);
+}
+
 int main(void)
 {
     test_tags_decide_the_class();
@@ -307,6 +432,8 @@ int main(void)
     test_reader_round_trip();
     test_plain_passes_through();
     test_truncated_deflate_fails();
+    test_cut_to_the_cell();
+    test_corners_that_disagree_close_nothing();
     printf("map_osm_test passed\n");
     return 0;
 }

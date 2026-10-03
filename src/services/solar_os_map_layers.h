@@ -95,6 +95,12 @@ typedef enum {
      * ROAD_MINOR, so a layer packed before it keeps its meaning.
      */
     SOLAR_OS_MAP_CLASS_STREET = 10,
+    /*
+     * A stretch of a cell's border that lies in water. It closes the
+     * pieces of a shore the border cut, so the lake fills inside the cell,
+     * and is never drawn: it is not a shore.
+     */
+    SOLAR_OS_MAP_CLASS_WATER_SEAM = 11,
     SOLAR_OS_MAP_CLASS_COUNT,
 } solar_os_map_class_t;
 

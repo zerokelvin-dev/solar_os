@@ -27,17 +27,66 @@ static const char *TAG = "map_fetch";
  * carries the water, the rivers that drain it, the railways and the roads
  * down to secondary; the other two are one kind of road each.
  */
-static const char *const map_fetch_clauses[SOLAR_OS_MAP_TIER_COUNT] = {
-    "  way[\"natural\"=\"water\"](%s);\n  rel[\"natural\"=\"water\"](%s);\n"
-    "  way[\"waterway\"=\"river\"](%s);\n"
-    "  way[\"railway\"=\"rail\"](%s);\n"
-    "  way[\"highway\"~\"^(motorway|trunk|primary|secondary)$\"](%s);\n",
-    "  way[\"highway\"=\"tertiary\"](%s);\n",
-    "  way[\"highway\"~\"^(residential|unclassified|living_street)$\"](%s);\n",
+/*
+ * What each tier asks for, how large its cell is, and how far each class may
+ * be simplified. The base carries the water, the rivers that drain it, the
+ * railways and the roads down to secondary, and so needs its tags; the other
+ * two are one kind of road each, so their tags are left on the server. A
+ * finer tier is kept in smaller cells, about a screen wide where it starts
+ * to be drawn, so loading one is never a city's worth at once.
+ *
+ * Every answer is cut to its cell by the server. For the base, which carries
+ * lakes, the answer ends with which water areas hold each corner, south-west
+ * first and round anticlockwise, so a shore cut by the border can be closed
+ * along it.
+ */
+typedef struct {
+    const char *suffix;
+    int32_t cell_e7;
+    solar_os_map_class_t klass;
+    const char *clauses;
+    bool skeleton;
+    bool corners;
+} map_fetch_tier_t;
+
+static const map_fetch_tier_t map_fetch_tiers[SOLAR_OS_MAP_TIER_COUNT] = {
+    [SOLAR_OS_MAP_TIER_BASE] = {
+        .suffix = "",
+        .cell_e7 = SOLAR_OS_MAP_CELL_E7,
+        .klass = SOLAR_OS_MAP_CLASS_ROAD,
+        .clauses =
+            "  way[\"natural\"=\"water\"](%s);\n  rel[\"natural\"=\"water\"](%s);\n"
+            "  way[\"waterway\"=\"river\"](%s);\n"
+            "  way[\"railway\"=\"rail\"](%s);\n"
+            "  way[\"highway\"~\"^(motorway|trunk|primary|secondary)$\"](%s);\n",
+        .corners = true,
+    },
+    [SOLAR_OS_MAP_TIER_MINOR] = {
+        .suffix = ".minor",
+        .cell_e7 = SOLAR_OS_MAP_CELL_E7,
+        .klass = SOLAR_OS_MAP_CLASS_ROAD_MINOR,
+        .clauses = "  way[\"highway\"=\"tertiary\"](%s);\n",
+        .skeleton = true,
+    },
+    [SOLAR_OS_MAP_TIER_STREETS] = {
+        .suffix = ".streets",
+        .cell_e7 = SOLAR_OS_MAP_CELL_E7 / 5,
+        .klass = SOLAR_OS_MAP_CLASS_STREET,
+        .clauses =
+            "  way[\"highway\"~\"^(residential|unclassified|living_street)$\"](%s);\n",
+        .skeleton = true,
+    },
 };
 
-static const char *const map_fetch_suffixes[SOLAR_OS_MAP_TIER_COUNT] = {
-    "", ".minor", ".streets",
+/* Metres a vertex may be off the simplified line, by class. */
+static const uint16_t map_fetch_tolerance_m[SOLAR_OS_MAP_CLASS_COUNT] = {
+    [SOLAR_OS_MAP_CLASS_WATER] = 10U,
+    [SOLAR_OS_MAP_CLASS_WATER_EDGE] = 10U,
+    [SOLAR_OS_MAP_CLASS_RAIL] = 15U,
+    [SOLAR_OS_MAP_CLASS_HIGHWAY] = 10U,
+    [SOLAR_OS_MAP_CLASS_ROAD] = 10U,
+    [SOLAR_OS_MAP_CLASS_ROAD_MINOR] = 10U,
+    [SOLAR_OS_MAP_CLASS_STREET] = 5U,
 };
 
 uint32_t solar_os_map_tier_max_mpp(solar_os_map_tier_t tier)
@@ -52,6 +101,12 @@ uint32_t solar_os_map_tier_max_mpp(solar_os_map_tier_t tier)
     }
 }
 
+int32_t solar_os_map_tier_cell_e7(solar_os_map_tier_t tier)
+{
+    return tier < SOLAR_OS_MAP_TIER_COUNT ? map_fetch_tiers[tier].cell_e7
+                                          : SOLAR_OS_MAP_CELL_E7;
+}
+
 void solar_os_map_tier_name(int32_t latitude_e7,
                             int32_t longitude_e7,
                             solar_os_map_tier_t tier,
@@ -59,9 +114,29 @@ void solar_os_map_tier_name(int32_t latitude_e7,
                             size_t out_len)
 {
     char cell[SOLAR_OS_MAP_CELL_NAME_MAX];
-    solar_os_map_cell_name(latitude_e7, longitude_e7, cell, sizeof(cell));
+    solar_os_map_cell_name_sized(latitude_e7, longitude_e7,
+                                 solar_os_map_tier_cell_e7(tier), cell,
+                                 sizeof(cell));
     (void)snprintf(out, out_len, "%s%s", cell,
-                   tier < SOLAR_OS_MAP_TIER_COUNT ? map_fetch_suffixes[tier] : "");
+                   tier < SOLAR_OS_MAP_TIER_COUNT ? map_fetch_tiers[tier].suffix : "");
+}
+
+/* Degrees as Overpass wants them, with the sign kept for -0.5. */
+static void map_fetch_degrees(int32_t e7, char *out, size_t len)
+{
+    const uint32_t magnitude = e7 < 0 ? (uint32_t)-(int64_t)e7 : (uint32_t)e7;
+    (void)snprintf(out, len, "%s%lu.%07lu", e7 < 0 ? "-" : "",
+                   (unsigned long)(magnitude / 10000000U),
+                   (unsigned long)(magnitude % 10000000U));
+}
+
+static esp_err_t map_fetch_pack(solar_os_inflate_t *reader,
+                                solar_os_map_class_t klass,
+                                const void *context,
+                                uint8_t **out,
+                                size_t *out_size)
+{
+    return solar_os_map_osm_read_cell(reader, klass, context, out, out_size);
 }
 
 /* TLS wants room: the same work through the curl application is given
@@ -102,27 +177,47 @@ static esp_err_t map_fetch_run(int32_t latitude_e7,
 {
     char name[SOLAR_OS_MAP_LAYER_NAME_MAX];
     solar_os_map_tier_name(latitude_e7, longitude_e7, tier, name, sizeof(name));
-    int32_t south = 0;
-    int32_t west = 0;
-    solar_os_map_cell_corner(latitude_e7, longitude_e7, &south, &west);
+    const map_fetch_tier_t *spec = &map_fetch_tiers[tier];
+    solar_os_map_osm_cell_t cell = {0};
+    solar_os_map_cell_corner_sized(latitude_e7, longitude_e7, spec->cell_e7,
+                                   &cell.south, &cell.west);
+    cell.north = cell.south + spec->cell_e7;
+    cell.east = cell.west + spec->cell_e7;
+    memcpy(cell.tolerance_m, map_fetch_tolerance_m, sizeof(cell.tolerance_m));
 
     /* Overpass takes a box as south,west,north,east in degrees. */
+    char south[16];
+    char west[16];
+    char north[16];
+    char east[16];
+    map_fetch_degrees(cell.south, south, sizeof(south));
+    map_fetch_degrees(cell.west, west, sizeof(west));
+    map_fetch_degrees(cell.north, north, sizeof(north));
+    map_fetch_degrees(cell.east, east, sizeof(east));
     char box[64];
-    (void)snprintf(box, sizeof(box), "%d.%07d,%d.%07d,%d.%07d,%d.%07d",
-                   south / 10000000, abs(south % 10000000),
-                   west / 10000000, abs(west % 10000000),
-                   (south + SOLAR_OS_MAP_CELL_E7) / 10000000,
-                   abs((south + SOLAR_OS_MAP_CELL_E7) % 10000000),
-                   (west + SOLAR_OS_MAP_CELL_E7) / 10000000,
-                   abs((west + SOLAR_OS_MAP_CELL_E7) % 10000000));
+    (void)snprintf(box, sizeof(box), "%s,%s,%s,%s", south, west, north, east);
     char clauses[768];
     /* Surplus arguments are ignored, so every tier is handed the box as many
      * times as the base, which wants it most. */
-    (void)snprintf(clauses, sizeof(clauses), map_fetch_clauses[tier], box, box,
-                   box, box, box);
-    char query[1024];
+    (void)snprintf(clauses, sizeof(clauses), spec->clauses, box, box, box, box,
+                   box);
+    char corners[512] = "";
+    if (spec->corners) {
+        (void)snprintf(corners, sizeof(corners),
+                       "is_in(%s,%s)->.c;area.c[\"natural\"=\"water\"];out ids;"
+                       "make corner;out;\n"
+                       "is_in(%s,%s)->.c;area.c[\"natural\"=\"water\"];out ids;"
+                       "make corner;out;\n"
+                       "is_in(%s,%s)->.c;area.c[\"natural\"=\"water\"];out ids;"
+                       "make corner;out;\n"
+                       "is_in(%s,%s)->.c;area.c[\"natural\"=\"water\"];out ids;"
+                       "make corner;out;\n",
+                       south, west, south, east, north, east, north, west);
+    }
+    char query[1600];
     (void)snprintf(query, sizeof(query),
-                   "[out:json][timeout:170];\n(\n%s);\nout geom;\n", clauses);
+                   "[out:json][timeout:170];\n(\n%s);\nout %sgeom(%s);\n%s",
+                   clauses, spec->skeleton ? "skel " : "", box, corners);
 
     char progress[sizeof(map_fetch_message)];
     const solar_os_map_download_t what = {
@@ -133,8 +228,9 @@ static esp_err_t map_fetch_run(int32_t latitude_e7,
         .body_len = strlen(query),
         .limit = SOLAR_OS_MAP_FETCH_MAX_BYTES,
         .timeout_ms = MAP_FETCH_TIMEOUT_MS,
-        .klass = SOLAR_OS_MAP_CLASS_ROAD,
-        .pack = solar_os_map_osm_read,
+        .klass = spec->klass,
+        .pack = map_fetch_pack,
+        .pack_context = &cell,
         .progress = progress,
         .progress_capacity = sizeof(progress),
     };
