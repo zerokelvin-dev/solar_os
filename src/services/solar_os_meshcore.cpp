@@ -14,6 +14,7 @@
 #include "ed_25519.h"
 
 extern "C" {
+#include "solar_os_config.h"
 #include "esp_check.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"

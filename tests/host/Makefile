@@ -14,6 +14,7 @@ KEYMAP_INPUTS := $(wildcard $(ROOT)/keymaps/profiles/*.json) $(ROOT)/scripts/gen
 .PHONY: all test clean
 
 TARGETS += lr11xx_test lr11xx_service_test
+TARGETS += reticulum_hdlc_test lxmf_format_test reticulum_lora_frame_test
 TARGETS += ble_service_test ble_multi_peer_test ble_nimble_test ble_hid_test ble_lua_bindings_test ble_server_test
 TARGETS += input_action_match_test gesture_completion_test
 TARGETS += epd_ssd1677_test epd_uc8179_test uc8179_expansion_test epd_uc8279_test uc8279_expansion_test
@@ -895,6 +896,27 @@ meshcore_ble_protocol_test: meshcore_ble_protocol_test.c \
 		meshcore_ble_protocol_test.c \
 		$(ROOT)/src/services/solar_os_meshcore_ble_protocol.c -o $@
 
+lxmf_format_test: lxmf_format_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_format.c \
+		$(ROOT)/src/services/solar_os_lxmf_format.h
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/src/services \
+		lxmf_format_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_format.c -o $@
+
+reticulum_hdlc_test: reticulum_hdlc_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_hdlc.c \
+		$(ROOT)/src/services/solar_os_reticulum_hdlc.h
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/src/services \
+		reticulum_hdlc_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_hdlc.c -o $@
+
+reticulum_lora_frame_test: reticulum_lora_frame_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_lora_frame.c \
+		$(ROOT)/src/services/solar_os_reticulum_lora_frame.h
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/src/services \
+		reticulum_lora_frame_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_lora_frame.c -o $@
+
 link_repeater_test: link_repeater_test.c \
 		$(ROOT)/src/services/solar_os_link_repeater.c \
 		$(ROOT)/src/services/solar_os_link_repeater.h \
@@ -1028,6 +1050,9 @@ test: $(TARGETS)
 	./meshcore_channel_key_test
 	./meshcore_stream_codec_test
 	./meshcore_ble_protocol_test
+	./lxmf_format_test
+	./reticulum_hdlc_test
+	./reticulum_lora_frame_test
 	./link_repeater_test
 	./time_timezone_test
 	./rtc_service_test
