@@ -1,0 +1,26 @@
+--- a/microReticulum/Transport.cpp	2026-09-29 10:25:04
++++ b/microReticulum/Transport.cpp	2026-09-29 10:25:04
+@@ -377,9 +377,9 @@
+ 	//p thread.start()
+ 
+ 	// Load transport-related data
+-	if (Reticulum::transport_enabled()) {
+-		INFO("Transport mode is enabled");
+-
++	// SolarOS: the persistent stores back the path table and known destinations of
++	// every node; upstream only opens them when transport is enabled.
++	{
+ 		// Read in path table
+ 		//read_path_table();
+ #if defined(RNS_USE_FS) && RNS_PERSIST_PATHS
+@@ -432,6 +432,10 @@
+ 			}
+ 		}
+ #endif // RNS_USE_FS && RNS_PERSIST_HASHLIST
++	}
++
++	if (Reticulum::transport_enabled()) {
++		INFO("Transport mode is enabled");
+ 
+ 		// CBA The following write and clean is very resource intensive so skip at startup
+ 		// and let a later (optimized) scheduled write and clean take care of it.

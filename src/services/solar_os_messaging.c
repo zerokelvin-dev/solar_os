@@ -1899,6 +1899,20 @@ esp_err_t solar_os_messaging_send(solar_os_conversation_id_t conversation_id,
     slot->message.delivery = SOLAR_OS_DELIVERY_QUEUED;
     slot->message.security_flags = conversation->security_flags;
     strlcpy(slot->message.body, body, sizeof(slot->message.body));
+    /*
+     * A message queued to a provider that is not running looks exactly
+     * like one queued to a provider that is merely slow, and the reason it
+     * is not moving is the one thing worth saying. The provider clears
+     * this when it picks the message up.
+     */
+    const messaging_provider_node_t *provider_node =
+        messaging_provider_node_locked(conversation->provider);
+    if (provider_node && !provider_node->status.running) {
+        snprintf(slot->message.error,
+                 sizeof(slot->message.error),
+                 "%s is not running",
+                 provider_node->status.name);
+    }
     messaging.message_head =
         (messaging.message_head + 1U) % SOLAR_OS_MESSAGING_MESSAGE_CAPACITY;
     if (messaging.message_count < SOLAR_OS_MESSAGING_MESSAGE_CAPACITY) {
