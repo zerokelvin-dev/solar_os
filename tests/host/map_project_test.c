@@ -714,6 +714,36 @@ static void test_a_water_edge_beside_the_view_is_kept(void)
  * Anything else loses both: a coarse lake outline drawn over a city puts a
  * lake through the middle of it.
  */
+/* A border sampled as coarsely is still drawn: it is the only border there
+ * is, a little off is better than none, and a line cannot flood anything. */
+static void test_a_coarse_border_in_view_is_kept(void)
+{
+    static const int32_t line[] = {
+        420000000, -800000000,
+        420000000, -770000000,
+    };
+    solar_os_map_view_t view = world_view();
+    view.center_lat_e7 = 420000000;
+    view.center_lon_e7 = -785000000;
+    view.meters_per_col = 100U;
+    for (unsigned pass = 0U; pass < 2U; pass++) {
+        const solar_os_map_class_t klass = pass == 0U
+                                               ? SOLAR_OS_MAP_CLASS_BOUNDARY
+                                               : SOLAR_OS_MAP_CLASS_REGION;
+        size_t size = 0U;
+        uint8_t *data = pack_ring(line, 2U, klass, true, 40000U, &size);
+        solar_os_map_geometry_t geometry;
+        solar_os_map_ring_t ring;
+        assert(first_ring(data, size, &geometry, &ring));
+        solar_os_map_cull_t cull;
+        solar_os_map_cull_prepare(&view, &geometry, &cull);
+        assert(cull.coarse);
+        bool outline = true;
+        assert(solar_os_map_ring_wanted(&cull, &view, &geometry, &ring, &outline));
+        free(data);
+    }
+}
+
 static void test_a_coarse_edge_in_view_is_dropped(void)
 {
     /* A ring spanning degrees, from a layer sampled every 40 km. */
@@ -807,6 +837,7 @@ int main(void)
     test_road_tiers_come_in_by_scale();
     test_a_class_is_crowded_over_its_own_ground();
     test_a_coarse_edge_in_view_is_dropped();
+    test_a_coarse_border_in_view_is_kept();
     test_a_coarse_ring_far_from_its_edges_is_kept();
     printf("map_project_test ok\n");
     return 0;
