@@ -363,3 +363,67 @@ size_t solar_os_map_close_over_pole(const solar_os_map_view_t *view,
     out[kept].y = edge;
     return kept + 1U;
 }
+
+/* How far a marker reaches from its centre, and how far a label sits off it. */
+#define MAP_LABEL_MARKER_HALF 6
+#define MAP_LABEL_OFFSET 8
+
+static bool map_boxes_overlap(int left_a, int top_a, int width_a, int height_a,
+                              int left_b, int top_b, int width_b, int height_b)
+{
+    return left_a < left_b + width_b && left_b < left_a + width_a &&
+           top_a < top_b + height_b && top_b < top_a + height_a;
+}
+
+void solar_os_map_place_labels(solar_os_map_label_t *labels,
+                               size_t count,
+                               const int *markers,
+                               size_t marker_count,
+                               int area_left,
+                               int area_top,
+                               int area_right,
+                               int area_bottom)
+{
+    for (size_t i = 0U; i < count; i++) {
+        solar_os_map_label_t *label = &labels[i];
+        const int w = label->width;
+        const int h = label->height;
+        const int spots[4][2] = {
+            {label->x + MAP_LABEL_OFFSET, label->y - h / 2},
+            {label->x - MAP_LABEL_OFFSET - w, label->y - h / 2},
+            {label->x - w / 2, label->y - MAP_LABEL_OFFSET - h},
+            {label->x - w / 2, label->y + MAP_LABEL_OFFSET},
+        };
+        label->placed = false;
+        for (size_t spot = 0U; spot < 4U && !label->placed; spot++) {
+            const int left = spots[spot][0];
+            const int top = spots[spot][1];
+            if (left < area_left || top < area_top || left + w > area_right ||
+                top + h > area_bottom) {
+                continue;
+            }
+            bool clear = true;
+            for (size_t m = 0U; m < marker_count && clear; m++) {
+                const int mx = markers[m * 2U];
+                const int my = markers[m * 2U + 1U];
+                clear = !map_boxes_overlap(left, top, w, h,
+                                           mx - MAP_LABEL_MARKER_HALF,
+                                           my - MAP_LABEL_MARKER_HALF,
+                                           MAP_LABEL_MARKER_HALF * 2 + 1,
+                                           MAP_LABEL_MARKER_HALF * 2 + 1);
+            }
+            for (size_t j = 0U; j < i && clear; j++) {
+                /* A pixel apart, so neighbouring labels do not read as one. */
+                clear = !labels[j].placed ||
+                        !map_boxes_overlap(left, top, w, h, labels[j].left - 1,
+                                           labels[j].top - 1, labels[j].width + 2,
+                                           labels[j].height + 2);
+            }
+            if (clear) {
+                label->placed = true;
+                label->left = left;
+                label->top = top;
+            }
+        }
+    }
+}

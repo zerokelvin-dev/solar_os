@@ -1168,11 +1168,12 @@ Open the map on a display:
 map
 ```
 
-Arrows or `h` `j` `k` `l` pan an eighth of a screen, `+` and `-` zoom,
-`Enter` fetches, loads or unloads the cell under the reticle, `Tab`, `n` and
+Arrows or `w` `a` `s` `d` pan an eighth of a screen, `+` and `-` zoom,
+`Enter` fetches the next tier of the cell under the reticle, `Tab`, `n` and
 `p` move the selection, `c` centres on the selected point (following it when
-it is your own position), `f` fits every point, `r` reads the GNSS position
-now, `d` deletes the selected point, and `q` or `Esc` leaves. `F2` - the
+it is your own position), `f` fits every point, `g` reads the GNSS position
+now, `r` deletes the selected point, `l` hides or shows labels, and `q` or
+`Esc` leaves. `F2` - the
 map key on a board that has one - centres on your own position and follows
 it, or shows the world when no position is known.
 

@@ -136,3 +136,33 @@ size_t solar_os_map_close_over_pole(const solar_os_map_view_t *view,
                                     solar_os_map_vertex_t *out,
                                     size_t capacity,
                                     size_t kept);
+
+/*
+ * A label beside a marker on screen. In: the marker's centre and the
+ * label's size. Out: whether it was placed, and its box's top-left.
+ */
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+    bool placed;
+    int left;
+    int top;
+} solar_os_map_label_t;
+
+/*
+ * Places labels in the order given, which is their priority. Each tries
+ * right of its marker, then left, above and below, and takes the first spot
+ * inside the area that overlaps no label already placed and no marker; a
+ * label with no such spot is left unplaced. Markers are every point drawn,
+ * labelled or not, as x and y pairs.
+ */
+void solar_os_map_place_labels(solar_os_map_label_t *labels,
+                               size_t count,
+                               const int *markers,
+                               size_t marker_count,
+                               int area_left,
+                               int area_top,
+                               int area_right,
+                               int area_bottom);
