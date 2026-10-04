@@ -296,13 +296,12 @@ map load /sdcard/toronto.bin
 
 ## Labels
 
-Your own position is labelled `you`, and every place you added with
-`places add` carries its own name, as does the selected point whatever it
-is. Labels are placed in that order of priority - the selected point, then
-you, then your places nearest the centre - each to the right of its marker
-if there is room, otherwise left, above or below. A label with no clear spot
-is left off until there is room for it, and its marker still shows. A long
-name is cut to fit. `l` hides or shows every label.
+One label is shown at a time: for the point nearest the reticle, among
+your own position (labelled `you`), the places you added with `places add`,
+and the selected point. Panning brings another point's name up as it comes
+under the reticle. The label sits to the right of its marker if there is
+room, otherwise left, above or below, and a long name is cut to fit. `l`
+hides or shows it.
 
 ## Keys
 
