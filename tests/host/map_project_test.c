@@ -821,6 +821,55 @@ static void test_a_coarse_ring_far_from_its_edges_is_kept(void)
     free(data);
 }
 
+static solar_os_map_label_t label_at(int x, int y)
+{
+    solar_os_map_label_t label = {.x = x, .y = y, .width = 40, .height = 9};
+    return label;
+}
+
+/* Right of the marker when there is room; left when the screen ends. */
+static void test_a_label_goes_right_then_left_at_the_edge(void)
+{
+    solar_os_map_label_t labels[2] = {label_at(100, 100), label_at(310, 50)};
+    const int markers[] = {100, 100, 310, 50};
+    solar_os_map_place_labels(labels, 2U, markers, 2U, 0, 20, 320, 240);
+    assert(labels[0].placed && labels[0].left == 108);
+    assert(labels[1].placed && labels[1].left == 310 - 8 - 40);
+}
+
+/* The first label given wins the spot both want; the second moves. */
+static void test_labels_are_placed_in_priority_order(void)
+{
+    const int markers[] = {100, 100, 100, 104};
+    solar_os_map_label_t labels[2] = {label_at(100, 100), label_at(100, 104)};
+    solar_os_map_place_labels(labels, 2U, markers, 2U, 0, 20, 320, 240);
+    assert(labels[0].placed && labels[0].left == 108);
+    assert(labels[1].placed && labels[1].left == 100 - 8 - 40);
+
+    solar_os_map_label_t swapped[2] = {label_at(100, 104), label_at(100, 100)};
+    solar_os_map_place_labels(swapped, 2U, markers, 2U, 0, 20, 320, 240);
+    assert(swapped[0].left == 108);
+    assert(swapped[1].left == 100 - 8 - 40);
+}
+
+/* A label does not cover another point's marker, labelled or not. */
+static void test_a_label_keeps_off_other_markers(void)
+{
+    const int markers[] = {100, 100, 130, 100};
+    solar_os_map_label_t labels[1] = {label_at(100, 100)};
+    solar_os_map_place_labels(labels, 1U, markers, 2U, 0, 20, 320, 240);
+    assert(labels[0].placed && labels[0].left == 100 - 8 - 40);
+}
+
+/* With every spot off the area, the label is skipped. */
+static void test_a_label_with_no_room_is_skipped(void)
+{
+    const int markers[] = {20, 30};
+    solar_os_map_label_t labels[1] = {label_at(20, 30)};
+    solar_os_map_place_labels(labels, 1U, markers, 1U, 0, 20, 45, 45);
+    assert(!labels[0].placed);
+}
+
 int main(void)
 {
     test_a_ring_crossing_the_far_meridian_stays_whole();
@@ -838,6 +887,10 @@ int main(void)
     test_a_class_is_crowded_over_its_own_ground();
     test_a_coarse_edge_in_view_is_dropped();
     test_a_coarse_border_in_view_is_kept();
+    test_a_label_goes_right_then_left_at_the_edge();
+    test_labels_are_placed_in_priority_order();
+    test_a_label_keeps_off_other_markers();
+    test_a_label_with_no_room_is_skipped();
     test_a_coarse_ring_far_from_its_edges_is_kept();
     printf("map_project_test ok\n");
     return 0;

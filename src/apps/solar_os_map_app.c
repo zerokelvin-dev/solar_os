@@ -64,6 +64,7 @@ typedef struct {
     uint32_t selected_id;
     size_t path_count;
     bool follow_self;
+    bool labels_hidden;
     bool feedback;
     bool valid;
     uint32_t ticks;
@@ -105,6 +106,7 @@ typedef struct {
     uint32_t meters_per_px;
     bool follow_self;
     bool centered;
+    bool labels_hidden;
     char feedback[64];
     /* When the message stops being shown. A message cleared after one frame
      * was gone before it could be read, which made every refusal invisible
@@ -684,9 +686,162 @@ static void map_app_draw_point(solar_os_gfx_t *gfx,
     }
     if (chosen) {
         solar_os_gfx_rect(gfx, x - 6, y - 6, 13, 13);
-        solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
-        solar_os_gfx_text(gfx, x + 8, y + 4, point->label);
     }
+}
+
+/* The small font's box, and where its baseline sits in it. */
+#define MAP_APP_LABEL_HEIGHT 9
+#define MAP_APP_LABEL_BASELINE 7
+#define MAP_APP_LABEL_MAX_PX 96
+
+/* What a point is called on the map, or NULL for a point left unlabelled:
+ * your own position is "you", a place you added is its own name, and the
+ * selected point is named whatever it is. */
+static const char *map_app_label_text(const solar_os_places_point_t *point,
+                                      bool chosen)
+{
+    if (point->kind == SOLAR_OS_PLACES_KIND_SELF) {
+        return "you";
+    }
+    if (chosen || strcmp(point->source, SOLAR_OS_PLACES_SOURCE_USER) == 0) {
+        return point->label[0] != '\0' ? point->label : NULL;
+    }
+    return NULL;
+}
+
+/* Cut to the width cap, ending in dots, so one long name cannot cross the
+ * screen. */
+static void map_app_fit_label(solar_os_gfx_t *gfx, const char *text, char *out,
+                              size_t out_len)
+{
+    strlcpy(out, text, out_len);
+    if ((int)solar_os_gfx_text_width(gfx, out) <= MAP_APP_LABEL_MAX_PX) {
+        return;
+    }
+    size_t len = strlen(out);
+    while (len > 0U) {
+        out[--len] = '\0';
+        char cut[SOLAR_OS_PLACES_LABEL_MAX + 4U];
+        (void)snprintf(cut, sizeof(cut), "%s...", out);
+        if ((int)solar_os_gfx_text_width(gfx, cut) <= MAP_APP_LABEL_MAX_PX) {
+            strlcpy(out, cut, out_len);
+            return;
+        }
+    }
+}
+
+typedef struct {
+    size_t point;
+    int x;
+    int y;
+    uint32_t rank;
+} map_app_label_pick_t;
+
+static int map_app_compare_pick(const void *a, const void *b)
+{
+    const uint32_t x = ((const map_app_label_pick_t *)a)->rank;
+    const uint32_t y = ((const map_app_label_pick_t *)b)->rank;
+    return x < y ? -1 : x > y;
+}
+
+/*
+ * Labels go on after every marker, so none sits under one, in priority
+ * order: the selected point, then your own position, then places you added
+ * nearest the centre first. A label with no clear spot is skipped this
+ * frame and its marker still shows; zooming in brings it back.
+ */
+static void map_app_draw_labels(solar_os_gfx_t *gfx,
+                                const int *markers,
+                                const size_t *marker_points,
+                                size_t marker_count,
+                                int area_top,
+                                int area_bottom)
+{
+    if (map_app.labels_hidden || marker_count == 0U) {
+        return;
+    }
+    map_app_label_pick_t *picks = solar_os_memory_calloc(
+        marker_count, sizeof(*picks), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    solar_os_map_label_t *labels = solar_os_memory_calloc(
+        marker_count, sizeof(*labels), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    char (*texts)[SOLAR_OS_PLACES_LABEL_MAX + 4U] = solar_os_memory_calloc(
+        marker_count, sizeof(*texts), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    if (picks == NULL || labels == NULL || texts == NULL) {
+        solar_os_memory_free(picks);
+        solar_os_memory_free(labels);
+        solar_os_memory_free(texts);
+        return;
+    }
+    const int width = (int)solar_os_gfx_width(gfx);
+    const int cx = width / 2;
+    const int cy = (area_top + area_bottom) / 2;
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    size_t count = 0U;
+    for (size_t m = 0U; m < marker_count; m++) {
+        const solar_os_places_point_t *point = &map_app.points[marker_points[m]];
+        const bool chosen = point->id == map_app.selected_id;
+        const char *text = map_app_label_text(point, chosen);
+        if (text == NULL) {
+            continue;
+        }
+        const int x = markers[m * 2U];
+        const int y = markers[m * 2U + 1U];
+        const int dx = x - cx;
+        const int dy = y - cy;
+        const uint32_t far = (uint32_t)(dx * dx + dy * dy);
+        picks[count] = (map_app_label_pick_t){
+            .point = marker_points[m],
+            .x = x,
+            .y = y,
+            .rank = chosen ? 0U
+                    : point->kind == SOLAR_OS_PLACES_KIND_SELF ? 1U
+                                                               : 2U + far,
+        };
+        count++;
+    }
+    qsort(picks, count, sizeof(*picks), map_app_compare_pick);
+    for (size_t i = 0U; i < count; i++) {
+        const solar_os_places_point_t *point = &map_app.points[picks[i].point];
+        map_app_fit_label(gfx,
+                          map_app_label_text(point,
+                                             point->id == map_app.selected_id),
+                          texts[i], sizeof(texts[i]));
+        labels[i] = (solar_os_map_label_t){
+            .x = picks[i].x,
+            .y = picks[i].y,
+            .width = (int)solar_os_gfx_text_width(gfx, texts[i]),
+            .height = MAP_APP_LABEL_HEIGHT,
+        };
+    }
+    solar_os_map_place_labels(labels, count, markers, marker_count, 0, area_top,
+                              width, area_bottom);
+    const bool colour = map_app_colour(gfx);
+    for (size_t i = 0U; i < count; i++) {
+        if (!labels[i].placed) {
+            continue;
+        }
+        const int x = labels[i].left;
+        const int baseline = labels[i].top + MAP_APP_LABEL_BASELINE;
+        solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+        if (colour) {
+            /* An outline rather than a box, so the map shows round it. */
+            solar_os_gfx_text(gfx, x - 1, baseline, texts[i]);
+            solar_os_gfx_text(gfx, x + 1, baseline, texts[i]);
+            solar_os_gfx_text(gfx, x, baseline - 1, texts[i]);
+            solar_os_gfx_text(gfx, x, baseline + 1, texts[i]);
+        } else {
+            solar_os_gfx_fill_rect(gfx, x - 1, labels[i].top, labels[i].width + 2,
+                                   labels[i].height);
+        }
+        solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+        solar_os_gfx_text(gfx, x, baseline, texts[i]);
+    }
+    solar_os_memory_free(picks);
+    solar_os_memory_free(labels);
+    solar_os_memory_free(texts);
 }
 
 /*
@@ -1102,6 +1257,7 @@ static bool map_app_frame_is_current(void)
         map_app.painted.selected_id == map_app.selected_id &&
         map_app.painted.path_count == map_app.path_count &&
         map_app.painted.follow_self == map_app.follow_self &&
+        map_app.painted.labels_hidden == map_app.labels_hidden &&
         map_app.painted.feedback == (map_app.feedback[0] != '\0');
     map_app.painted.center_lat_e7 = map_app.center_lat_e7;
     map_app.painted.center_lon_e7 = map_app.center_lon_e7;
@@ -1111,6 +1267,7 @@ static bool map_app_frame_is_current(void)
     map_app.painted.selected_id = map_app.selected_id;
     map_app.painted.path_count = map_app.path_count;
     map_app.painted.follow_self = map_app.follow_self;
+    map_app.painted.labels_hidden = map_app.labels_hidden;
     map_app.painted.feedback = map_app.feedback[0] != '\0';
     map_app.painted.valid = true;
     return same;
@@ -1194,6 +1351,13 @@ static void map_app_render(solar_os_context_t *ctx)
     solar_os_gfx_set_line_style(gfx, SOLAR_OS_GFX_LINE_SOLID);
 
     const solar_os_places_point_t *selected = map_app_selected();
+    int *markers = solar_os_memory_calloc(map_app.count + 1U, 2U * sizeof(int),
+                                          SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+                                          "app.map.labels");
+    size_t *marker_points = solar_os_memory_calloc(
+        map_app.count + 1U, sizeof(size_t), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    size_t marker_count = 0U;
     /* Oldest first so the newest position draws on top. */
     for (size_t i = map_app.count; i-- > 0;) {
         const solar_os_places_point_t *point = &map_app.points[i];
@@ -1211,7 +1375,16 @@ static void map_app_render(solar_os_context_t *ctx)
                            (int)col,
                            (int)row + MAP_APP_HEADER_H,
                            selected != NULL && selected->id == point->id);
+        if (markers != NULL && marker_points != NULL) {
+            markers[marker_count * 2U] = (int)col;
+            markers[marker_count * 2U + 1U] = (int)row + MAP_APP_HEADER_H;
+            marker_points[marker_count++] = i;
+        }
     }
+    map_app_draw_labels(gfx, markers, marker_points, marker_count,
+                        MAP_APP_HEADER_H, MAP_APP_HEADER_H + area);
+    solar_os_memory_free(markers);
+    solar_os_memory_free(marker_points);
 
     if (solar_os_map_layer_count() == 0U) {
         map_app_draw_empty(gfx, MAP_APP_HEADER_H, area);
@@ -1596,19 +1769,23 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         map_app_render(ctx);
         return true;
     case SOLAR_OS_KEY_UP:
-    case 'k':
+    case 'w':
+    case 'W':
         map_app_pan(ctx, 0, 1);
         break;
     case SOLAR_OS_KEY_DOWN:
-    case 'j':
+    case 's':
+    case 'S':
         map_app_pan(ctx, 0, -1);
         break;
     case SOLAR_OS_KEY_LEFT:
-    case 'h':
+    case 'a':
+    case 'A':
         map_app_pan(ctx, -1, 0);
         break;
     case SOLAR_OS_KEY_RIGHT:
-    case 'l':
+    case 'd':
+    case 'D':
         map_app_pan(ctx, 1, 0);
         break;
     case '+':
@@ -1637,14 +1814,19 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
     case SOLAR_OS_KEY_F2:
         map_app_go_home(ctx);
         break;
-    case 'd':
-    case 'D':
-        map_app_delete_selected();
-        break;
     case 'r':
     case 'R':
+        map_app_delete_selected();
+        break;
+    case 'g':
+    case 'G':
         map_app_poll_self();
         map_app_refresh();
+        break;
+    case 'l':
+    case 'L':
+        map_app.labels_hidden = !map_app.labels_hidden;
+        map_app_say("labels %s", map_app.labels_hidden ? "hidden" : "shown");
         break;
     default:
         return true;
