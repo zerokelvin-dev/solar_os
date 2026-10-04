@@ -293,18 +293,30 @@ curl -o /sdcard/toronto.bin http://192.168.1.10:8000/toronto.bin
 map load /sdcard/toronto.bin
 ```
 
+
+## Labels
+
+Your own position is labelled `you`, and every place you added with
+`places add` carries its own name, as does the selected point whatever it
+is. Labels are placed in that order of priority - the selected point, then
+you, then your places nearest the centre - each to the right of its marker
+if there is room, otherwise left, above or below. A label with no clear spot
+is left off until there is room for it, and its marker still shows. A long
+name is cut to fit. `l` hides or shows every label.
+
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| Arrows, `h` `j` `k` `l` | Pan an eighth of a screen |
+| Arrows, `w` `a` `s` `d` | Pan an eighth of a screen |
 | `+` `-` | Zoom in and out |
 | `Enter` | Add the next tier of the cell under the reticle |
 | `Tab`, `n`, `p` | Select the next or previous point |
 | `c` | Centre on the selected point, and follow it if it is your position |
 | `f` | Fit every point on screen |
-| `r` | Read the GNSS position now |
-| `d` | Delete the selected point |
+| `g` | Read the GNSS position now |
+| `r` | Delete the selected point |
+| `l` | Hide or show labels |
 | `q`, `Esc` | Leave the app |
 
 The sea is drawn as a pale ground under everything, so land drawn over it
