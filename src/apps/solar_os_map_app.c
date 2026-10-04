@@ -745,10 +745,10 @@ static int map_app_compare_pick(const void *a, const void *b)
 }
 
 /*
- * Labels go on after every marker, so none sits under one, in priority
- * order: the selected point, then your own position, then places you added
- * nearest the centre first. A label with no clear spot is skipped this
- * frame and its marker still shows; zooming in brings it back.
+ * The label goes on after every marker, so none sits under it, for the
+ * labelled point nearest the reticle only: the one being aimed at. It sits
+ * to the right of its marker if there is room, otherwise left, above or
+ * below, and is left off if none of those is clear.
  */
 static void map_app_draw_labels(solar_os_gfx_t *gfx,
                                 const int *markers,
@@ -796,13 +796,13 @@ static void map_app_draw_labels(solar_os_gfx_t *gfx,
             .point = marker_points[m],
             .x = x,
             .y = y,
-            .rank = chosen ? 0U
-                    : point->kind == SOLAR_OS_PLACES_KIND_SELF ? 1U
-                                                               : 2U + far,
+            .rank = far,
         };
         count++;
     }
     qsort(picks, count, sizeof(*picks), map_app_compare_pick);
+    /* One label, the point nearest the reticle: the one being aimed at. */
+    count = count > 1U ? 1U : count;
     for (size_t i = 0U; i < count; i++) {
         const solar_os_places_point_t *point = &map_app.points[picks[i].point];
         map_app_fit_label(gfx,
