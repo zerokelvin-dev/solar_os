@@ -656,6 +656,11 @@ static void map_app_draw_layers(solar_os_gfx_t *gfx,
             const solar_os_map_geometry_t *geometry = solar_os_map_layer(index);
             if (map_app_layer_in_view(view, geometry)) {
                 solar_os_map_layer_touch(index);
+            } else if (world == 0) {
+                /* An out-of-view cell adds nothing, since it closes its own
+                 * water with WATER_SEAM. World layers are still drawn, as
+                 * the far-shore rule in solar_os_map_project.c needs them. */
+                continue;
             }
             map_app_draw_geometry(gfx, view, geometry);
         }
