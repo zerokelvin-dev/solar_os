@@ -353,16 +353,43 @@ static esp_err_t read_cell(const char *answer, const uint8_t corners_override,
     return error;
 }
 
+/* The index-th point of the whole layer, from whichever ring holds it. */
+static void point_at(const uint8_t *packed,
+                     uint32_t rings,
+                     uint32_t index,
+                     int32_t *lat,
+                     int32_t *lon)
+{
+    const size_t size = SOLAR_OS_MAP_LAYER_HEADER + rings * 20U +
+                        read_u32(&packed[12]) * 4U;
+    solar_os_map_geometry_t geometry;
+    assert(solar_os_map_geometry_parse(packed, size, &geometry) == ESP_OK);
+    solar_os_map_ring_cursor_t cursor = {0};
+    solar_os_map_ring_t ring;
+    while (solar_os_map_geometry_next(&geometry, &cursor, &ring)) {
+        if (index < ring.point_count) {
+            solar_os_map_ring_point(&ring, index, lat, lon);
+            return;
+        }
+        index -= (uint32_t)ring.point_count;
+    }
+    assert(false);
+}
+
 static int32_t point_lat(const uint8_t *packed, uint32_t rings, uint32_t index)
 {
-    return (int32_t)read_u32(&packed[SOLAR_OS_MAP_LAYER_HEADER + rings * 20U +
-                                     index * 8U]);
+    int32_t lat;
+    int32_t lon;
+    point_at(packed, rings, index, &lat, &lon);
+    return lat;
 }
 
 static int32_t point_lon(const uint8_t *packed, uint32_t rings, uint32_t index)
 {
-    return (int32_t)read_u32(&packed[SOLAR_OS_MAP_LAYER_HEADER + rings * 20U +
-                                     index * 8U + 4U]);
+    int32_t lat;
+    int32_t lon;
+    point_at(packed, rings, index, &lat, &lon);
+    return lon;
 }
 
 static void test_cut_to_the_cell(void)

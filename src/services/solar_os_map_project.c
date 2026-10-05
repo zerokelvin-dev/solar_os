@@ -24,16 +24,18 @@ static bool map_ring_edge_in_view(const solar_os_map_ring_t *ring,
                                        : ring->point_count;
     for (size_t point = 0U; point < segments; point++) {
         const size_t next = (point + 1U) % ring->point_count;
-        const int32_t lat_a = ring->coordinates[point * 2U];
-        const int32_t lat_b = ring->coordinates[next * 2U];
+        int32_t lat_a;
+        int32_t lat_b;
+        int32_t raw_lon_a;
+        int32_t raw_lon_b;
+        solar_os_map_ring_point(ring, point, &lat_a, &raw_lon_a);
+        solar_os_map_ring_point(ring, next, &lat_b, &raw_lon_b);
         if ((lat_a < lat_min && lat_b < lat_min) ||
             (lat_a > lat_max && lat_b > lat_max)) {
             continue;
         }
-        const int32_t lon_a =
-            solar_os_map_relative_lon(view, ring->coordinates[point * 2U + 1U]);
-        const int32_t lon_b =
-            solar_os_map_relative_lon(view, ring->coordinates[next * 2U + 1U]);
+        const int32_t lon_a = solar_os_map_relative_lon(view, raw_lon_a);
+        const int32_t lon_b = solar_os_map_relative_lon(view, raw_lon_b);
         /* A segment crossing the far meridian arrives inverted, and one of
          * its halves reaches the view from either side. */
         if (map_lon_wraps(lon_a, lon_b)) {
@@ -223,8 +225,9 @@ size_t solar_os_map_project_ring(const solar_os_map_view_t *view,
     span->full_turn = 0U;
 
     for (size_t point = 0U; point < ring->point_count; point++) {
-        const int32_t lat = ring->coordinates[point * 2U];
-        const int32_t lon = ring->coordinates[point * 2U + 1U];
+        int32_t lat;
+        int32_t lon;
+        solar_os_map_ring_point(ring, point, &lat, &lon);
         const bool ends = point == 0U || point + 1U == ring->point_count;
         if (!ends) {
             const int64_t moved =

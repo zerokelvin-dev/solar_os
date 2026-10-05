@@ -18,7 +18,10 @@
  * belongs on the card, where it can be replaced without a new firmware.
  *
  * Layout: a header, then a count per ring, then bounds per ring as four
- * coordinates, then the coordinates. A ring's count carries
+ * coordinates, then the points. A point is two 16-bit offsets from its
+ * ring's least latitude and longitude, shifted right by the ring's shift:
+ * the fewest bits that bring the ring's span within sixteen, so it is read
+ * from the bounds rather than stored. A ring's count carries
  * SOLAR_OS_MAP_RING_OPEN when the ring is a line rather than an area, and
  * its class in the bits below that.
  *
@@ -27,7 +30,7 @@
  * what the layer supports. Zero means no limit.
  */
 #define SOLAR_OS_MAP_LAYER_MAGIC "SOMB"
-#define SOLAR_OS_MAP_LAYER_VERSION 2U
+#define SOLAR_OS_MAP_LAYER_VERSION 3U
 #define SOLAR_OS_MAP_LAYER_HEADER 16U
 /*
  * Slots, which are cheap: a slot is a name and a handful of counts, about
@@ -134,7 +137,9 @@ typedef struct {
 } solar_os_map_geometry_t;
 
 typedef struct {
-    const int32_t *coordinates; /* latitude, longitude pairs */
+    /* Latitude, longitude offset pairs; read with solar_os_map_ring_point. */
+    const uint16_t *points;
+    uint8_t shift;
     size_t point_count;
     bool open;
     solar_os_map_class_t klass;
@@ -145,6 +150,24 @@ typedef struct {
     int32_t lon_min;
     int32_t lon_max;
 } solar_os_map_ring_t;
+
+static inline void solar_os_map_ring_point(const solar_os_map_ring_t *ring,
+                                           size_t point,
+                                           int32_t *lat,
+                                           int32_t *lon)
+{
+    *lat = (int32_t)((uint32_t)ring->lat_min +
+                     ((uint32_t)ring->points[point * 2U] << ring->shift));
+    *lon = (int32_t)((uint32_t)ring->lon_min +
+                     ((uint32_t)ring->points[point * 2U + 1U] << ring->shift));
+}
+
+/*
+ * Packs a layer built with each point as two 32-bit coordinates into the
+ * layout above, in place, and returns its packed size. Writers build at
+ * full width because a ring's bounds are only known once it ends.
+ */
+size_t solar_os_map_geometry_pack(uint8_t *data, size_t size);
 
 
 esp_err_t solar_os_map_geometry_parse(const uint8_t *data,

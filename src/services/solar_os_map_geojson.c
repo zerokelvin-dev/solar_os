@@ -390,7 +390,16 @@ esp_err_t solar_os_map_geojson_read(solar_os_inflate_t *reader,
         solar_os_memory_free(data);
         return error;
     }
-    *out = data;
-    *out_size = size;
+    const size_t packed = solar_os_map_geometry_pack(data, size);
+    if (packed == 0U) {
+        solar_os_memory_free(data);
+        return ESP_FAIL;
+    }
+    uint8_t *shrunk = solar_os_memory_realloc(data,
+                                              packed,
+                                              SOLAR_OS_MEMORY_EXTERNAL_REQUIRED,
+                                              "service.map.geojson");
+    *out = shrunk != NULL ? shrunk : data;
+    *out_size = packed;
     return ESP_OK;
 }
