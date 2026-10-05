@@ -427,8 +427,9 @@ static bool layer_evict_oldest(size_t keep)
 }
 
 
-/* Where imported layers are kept, created if it is not there yet. */
-static esp_err_t layer_store_dir(char *path, size_t capacity)
+/* Where imported layers are kept. Only callers about to write there pass
+ * `create`, since creating costs card I/O on every lookup. */
+static esp_err_t layer_store_dir(char *path, size_t capacity, bool create)
 {
     if (!solar_os_storage_is_mounted()) {
         return ESP_ERR_INVALID_STATE;
@@ -438,14 +439,18 @@ static esp_err_t layer_store_dir(char *path, size_t capacity)
     if (error != ESP_OK) {
         return error;
     }
-    return solar_os_storage_makedirs(path, true);
+    return create ? solar_os_storage_makedirs(path, true) : ESP_OK;
 }
 
 /* The imported copy of one layer, named for the layer itself. */
-static esp_err_t layer_store_path(const char *name, char *path, size_t capacity)
+static esp_err_t layer_store_path(const char *name,
+                                  char *path,
+                                  size_t capacity,
+                                  bool create)
 {
     char directory[SOLAR_OS_STORAGE_PATH_MAX];
-    const esp_err_t error = layer_store_dir(directory, sizeof(directory));
+    const esp_err_t error =
+        layer_store_dir(directory, sizeof(directory), create);
     if (error != ESP_OK) {
         return error;
     }
@@ -488,7 +493,7 @@ esp_err_t solar_os_map_layer_load(const char *path)
         }
     }
     char stored[SOLAR_OS_STORAGE_PATH_MAX];
-    if (layer_store_path(name, stored, sizeof(stored)) != ESP_OK) {
+    if (layer_store_path(name, stored, sizeof(stored), true) != ESP_OK) {
         return ESP_OK;
     }
     if (strcmp(stored, path) != 0) {
@@ -508,7 +513,8 @@ typedef bool (*layer_kept_fn)(void *user, const char *name, uint64_t size);
 static void layer_walk_kept(layer_kept_fn visit, void *user)
 {
     char directory[SOLAR_OS_STORAGE_PATH_MAX];
-    if (layer_store_dir(directory, sizeof(directory)) != ESP_OK) {
+    /* A missing directory is an empty list. */
+    if (layer_store_dir(directory, sizeof(directory), false) != ESP_OK) {
         return;
     }
     size_t cursor = 0U;
@@ -646,7 +652,7 @@ esp_err_t solar_os_map_layer_keep(const char *name,
     char file[SOLAR_OS_MAP_LAYER_NAME_MAX];
     (void)snprintf(file, sizeof(file), "%s.bin", name);
     char path[SOLAR_OS_STORAGE_PATH_MAX];
-    const esp_err_t error = layer_store_path(file, path, sizeof(path));
+    const esp_err_t error = layer_store_path(file, path, sizeof(path), true);
     if (error != ESP_OK) {
         return error;
     }
@@ -689,7 +695,7 @@ static esp_err_t layer_find_kept(const char *what, char *path, size_t capacity)
 {
     layer_seek_t seek = {.what = what, .asked = strlen(what)};
     layer_walk_kept(layer_seek_visit, &seek);
-    return seek.found ? layer_store_path(seek.name, path, capacity)
+    return seek.found ? layer_store_path(seek.name, path, capacity, false)
                       : ESP_ERR_NOT_FOUND;
 }
 
@@ -701,7 +707,7 @@ static esp_err_t layer_find_kept_index(size_t wanted,
 {
     layer_seek_t seek = {.by_index = true, .wanted = wanted};
     layer_walk_kept(layer_seek_visit, &seek);
-    return seek.found ? layer_store_path(seek.name, path, capacity)
+    return seek.found ? layer_store_path(seek.name, path, capacity, false)
                       : ESP_ERR_NOT_FOUND;
 }
 
