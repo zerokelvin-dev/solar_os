@@ -25,11 +25,15 @@
  * What to call each class when listing a layer. Kept here rather than in
  * the service because it is how a listing reads, not what a ring is, and
  * the order follows solar_os_map_class_t exactly.
+ * Unsized, so the assert below catches a class left unnamed here.
  */
-static const char *const map_shell_class_names[SOLAR_OS_MAP_CLASS_COUNT] = {
+static const char *const map_shell_class_names[] = {
     "land", "water", "road", "rail", "building", "boundary", "region",
-    "minor road", "water edge", "highway",
+    "minor road", "water edge", "highway", "street", "water seam",
 };
+_Static_assert(sizeof(map_shell_class_names) / sizeof(map_shell_class_names[0]) ==
+                   SOLAR_OS_MAP_CLASS_COUNT,
+               "map_shell_class_names must name every solar_os_map_class_t");
 
 static const char * const map_commands[] = {
     "status", "layers", "load", "unload", "fetch", "base", "stored",
