@@ -30,11 +30,14 @@
 #define SOLAR_OS_MAP_LAYER_VERSION 2U
 #define SOLAR_OS_MAP_LAYER_HEADER 16U
 /*
- * Slots, which are cheap: a slot is a name and a handful of counts. What is
- * actually scarce is the geometry they point at, so the slot count is set
- * generously and SOLAR_OS_MAP_LAYER_BUDGET_BYTES is what bites first.
+ * Slots, which are cheap: a slot is a name and a handful of counts, about
+ * 380 bytes of internal RAM. What is actually scarce is the geometry they
+ * point at, so the slot count is set generously and
+ * SOLAR_OS_MAP_LAYER_BUDGET_BYTES is what bites first. Generously means
+ * enough for the four world layers plus a screen of street cells, which are
+ * small and many.
  */
-#define SOLAR_OS_MAP_LAYER_MAX 12U
+#define SOLAR_OS_MAP_LAYER_MAX 32U
 /*
  * How much packed geometry may be held at once. Measured on an 8 MB PSRAM
  * board: a world map is 0.6 MiB, a quarter-degree cell of a dense city is
