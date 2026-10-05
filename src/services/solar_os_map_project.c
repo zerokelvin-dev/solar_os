@@ -228,8 +228,10 @@ size_t solar_os_map_project_ring(const solar_os_map_view_t *view,
         const bool ends = point == 0U || point + 1U == ring->point_count;
         if (!ends) {
             const int64_t moved =
-                (int64_t)(lat > last_lat ? lat - last_lat : last_lat - lat) +
-                (int64_t)(lon > last_lon ? lon - last_lon : last_lon - lon);
+                (lat > last_lat ? (int64_t)lat - last_lat
+                                : (int64_t)last_lat - lat) +
+                (lon > last_lon ? (int64_t)lon - last_lon
+                                : (int64_t)last_lon - lon);
             if (moved < step) {
                 continue;
             }
