@@ -1080,6 +1080,7 @@ label = "service.map"
 depends = ["service_geo", "service_http_client", "service_inflate"]
 sources = [
   "services/solar_os_map_geojson.c",
+  "services/solar_os_map_geometry.c",
   "services/solar_os_map_layers.c",
   "services/solar_os_map_project.c",
   "services/solar_os_map_osm.c",

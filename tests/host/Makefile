@@ -1231,6 +1231,7 @@ places_test: places_test.c \
 
 map_layers_test: map_layers_test.c \
 		$(ROOT)/src/services/solar_os_map_layers.c \
+		$(ROOT)/src/services/solar_os_map_geometry.c \
 		$(ROOT)/src/services/solar_os_map_geojson.c \
 		$(ROOT)/src/services/solar_os_inflate.c \
 		$(ROOT)/src/services/solar_os_map_layers.h \
@@ -1240,6 +1241,7 @@ map_layers_test: map_layers_test.c \
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -I. -I$(ROOT)/src -I$(ROOT)/src/services \
 		map_layers_test.c \
 		$(ROOT)/src/services/solar_os_map_layers.c \
+		$(ROOT)/src/services/solar_os_map_geometry.c \
 		$(ROOT)/src/services/solar_os_map_geojson.c \
 		$(ROOT)/src/services/solar_os_map_geo.c \
 		$(ROOT)/src/services/solar_os_inflate.c -lz -lm \
@@ -1248,6 +1250,7 @@ map_layers_test: map_layers_test.c \
 map_project_test: map_project_test.c \
 		$(ROOT)/src/services/solar_os_map_project.c \
 		$(ROOT)/src/services/solar_os_map_layers.c \
+		$(ROOT)/src/services/solar_os_map_geometry.c \
 		$(ROOT)/src/services/solar_os_map_geo.c \
 		$(ROOT)/src/services/solar_os_map_project.h
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -I. -I$(ROOT)/src -I$(ROOT)/src/services \
@@ -1255,11 +1258,13 @@ map_project_test: map_project_test.c \
 		$(ROOT)/src/services/solar_os_map_project.c \
 		$(ROOT)/src/services/solar_os_map_geo.c \
 		$(ROOT)/src/services/solar_os_map_layers.c \
+		$(ROOT)/src/services/solar_os_map_geometry.c \
 		$(ROOT)/src/services/solar_os_map_geojson.c \
 		$(ROOT)/src/services/solar_os_inflate.c -lz -lm -o $@
 
 map_osm_test: map_osm_test.c \
 		$(ROOT)/src/services/solar_os_map_osm.c \
+		$(ROOT)/src/services/solar_os_map_geometry.c \
 		$(ROOT)/src/services/solar_os_map_geo.c \
 		$(ROOT)/src/services/solar_os_inflate.c \
 		$(ROOT)/src/services/solar_os_map_osm.h \
@@ -1269,6 +1274,7 @@ map_osm_test: map_osm_test.c \
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -I. -I$(ROOT)/src -I$(ROOT)/src/services \
 		map_osm_test.c \
 		$(ROOT)/src/services/solar_os_map_osm.c \
+		$(ROOT)/src/services/solar_os_map_geometry.c \
 		$(ROOT)/src/services/solar_os_map_geo.c \
 		$(ROOT)/src/services/solar_os_inflate.c -lz -lm -o $@
 
