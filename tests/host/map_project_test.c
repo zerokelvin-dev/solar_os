@@ -27,6 +27,16 @@ void solar_os_memory_free(void *pointer)
  * Reading a packed layer lives beside loading one, and loading one needs
  * storage. Nothing here loads anything, so these only have to exist.
  */
+void *solar_os_memory_realloc(void *pointer,
+                              size_t size,
+                              solar_os_memory_class_t memory_class,
+                              const char *tag)
+{
+    (void)memory_class;
+    (void)tag;
+    return realloc(pointer, size);
+}
+
 bool solar_os_storage_is_mounted(void) { return false; }
 esp_err_t solar_os_storage_default_path(const char *relative_path,
                                         char *buffer,
@@ -131,7 +141,7 @@ static uint8_t *pack_ring(const int32_t *lat_lon,
         write_u32(&coords[i * 8U], (uint32_t)lat_lon[i * 2U]);
         write_u32(&coords[i * 8U + 4U], (uint32_t)lat_lon[i * 2U + 1U]);
     }
-    *out_size = size;
+    *out_size = solar_os_map_geometry_pack(data, size);
     return data;
 }
 
@@ -524,7 +534,7 @@ static uint8_t *pack_rings(const int32_t *const *lat_lon,
         write_u32(&bounds[r * 16U + 8U], (uint32_t)lon_min);
         write_u32(&bounds[r * 16U + 12U], (uint32_t)lon_max);
     }
-    *out_size = size;
+    *out_size = solar_os_map_geometry_pack(data, size);
     return data;
 }
 

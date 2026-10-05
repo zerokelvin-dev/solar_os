@@ -27,6 +27,16 @@ void solar_os_memory_free(void *pointer)
     free(pointer);
 }
 
+void *solar_os_memory_realloc(void *pointer,
+                              size_t size,
+                              solar_os_memory_class_t memory_class,
+                              const char *tag)
+{
+    (void)memory_class;
+    (void)tag;
+    return realloc(pointer, size);
+}
+
 /* No storage under test, so nothing is imported and nothing is kept. */
 bool solar_os_storage_is_mounted(void)
 {
@@ -218,8 +228,18 @@ static void write_gzip_file(const char *path, const void *data, size_t size)
  */
 static void test_import_deflated_or_not(void)
 {
+    /* A repeating line, so deflating has something to save. */
+    char line[8192];
+    size_t used = (size_t)snprintf(line, sizeof(line),
+                                   "{\"type\":\"LineString\",\"coordinates\":[");
+    for (unsigned i = 0U; i < 200U; i++) {
+        used += (size_t)snprintf(&line[used], sizeof(line) - used,
+                                 "%s[-79.%u,43.%u]", i == 0U ? "" : ",",
+                                 3U + i % 2U, 6U + i % 2U);
+    }
+    (void)snprintf(&line[used], sizeof(line) - used, "]}");
     size_t size = 0U;
-    uint8_t *packed = pack_sample_layer(&size);
+    uint8_t *packed = read_geojson(line, &size);
     assert(packed != NULL);
 
     const char *plain_path = "map_layers_test_plain.bin";
@@ -343,9 +363,15 @@ static void test_geojson_polygon(void)
     assert(ring.point_count == 4U);
     assert(!ring.open);
     /* GeoJSON stores longitude first; the layer stores latitude first. */
-    assert(ring.coordinates[0] == 0 && ring.coordinates[1] == 0);
-    assert(ring.coordinates[2] == 0 && ring.coordinates[3] == 10000000);
-    assert(ring.coordinates[4] == 10000000 && ring.coordinates[5] == 10000000);
+    int32_t lat;
+    int32_t lon;
+    const int32_t step = 1 << ring.shift;
+    solar_os_map_ring_point(&ring, 0U, &lat, &lon);
+    assert(lat == 0 && lon == 0);
+    solar_os_map_ring_point(&ring, 1U, &lat, &lon);
+    assert(lat == 0 && 10000000 - lon < step);
+    solar_os_map_ring_point(&ring, 2U, &lat, &lon);
+    assert(10000000 - lat < step && 10000000 - lon < step);
     free(packed);
 }
 
@@ -378,8 +404,11 @@ static void test_geojson_shapes(void)
     assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
     assert(ring.point_count == 2U && ring.open);
     assert(!solar_os_map_geometry_next(&geometry, &cursor, &ring));
-    assert(ring.coordinates[0] == 436500000);
-    assert(ring.coordinates[1] == -793800000);
+    int32_t lat;
+    int32_t lon;
+    solar_os_map_ring_point(&ring, 0U, &lat, &lon);
+    assert(lat == 436500000);
+    assert(lon == -793800000);
     free(packed);
 }
 
@@ -393,6 +422,73 @@ static void test_geojson_rejects(void)
                         "\"coordinates\":[1,2]}}", &size) == NULL);
 }
 
+/* Points come back within one step of the ring's shift, never past its
+ * bounds, and exactly when the ring is small enough to need no shift. */
+static void test_points_round_trip(void)
+{
+    static const int32_t cell[][2] = {
+        {436512345, -793987654}, {437487651, -793012347},
+        {436000001, -792500003}, {437499999, -794999999},
+    };
+    static const char *const text =
+        "{\"type\":\"FeatureCollection\",\"features\":["
+        "{\"geometry\":{\"type\":\"LineString\",\"coordinates\":"
+        "[[-79.3987654,43.6512345],[-79.3012347,43.7487651],"
+        "[-79.2500003,43.6000001],[-79.4999999,43.7499999]]}},"
+        "{\"geometry\":{\"type\":\"LineString\",\"coordinates\":"
+        "[[-79.3800001,43.6500001],[-79.3790123,43.6512345]]}}]}";
+    size_t size = 0U;
+    uint8_t *packed = read_geojson(text, &size);
+    assert(packed != NULL);
+    solar_os_map_geometry_t geometry;
+    assert(solar_os_map_geometry_parse(packed, size, &geometry) == ESP_OK);
+    solar_os_map_ring_cursor_t cursor = {0};
+    solar_os_map_ring_t ring;
+    assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
+    assert(ring.shift > 0U);
+    for (size_t i = 0U; i < 4U; i++) {
+        int32_t lat;
+        int32_t lon;
+        solar_os_map_ring_point(&ring, i, &lat, &lon);
+        assert(lat <= cell[i][0] && cell[i][0] - lat < (1 << ring.shift));
+        assert(lon <= cell[i][1] && cell[i][1] - lon < (1 << ring.shift));
+        assert(lat >= ring.lat_min && lat <= ring.lat_max);
+        assert(lon >= ring.lon_min && lon <= ring.lon_max);
+    }
+    assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
+    assert(ring.shift == 0U);
+    int32_t lat;
+    int32_t lon;
+    solar_os_map_ring_point(&ring, 1U, &lat, &lon);
+    assert(lat == 436512345 && lon == -793790123);
+    free(packed);
+}
+
+/* A ring spanning every longitude still fits, at the widest shift. */
+static void test_points_span_the_world(void)
+{
+    static const char *const text =
+        "{\"type\":\"LineString\",\"coordinates\":"
+        "[[-180,-90],[0,0],[180,90]]}";
+    size_t size = 0U;
+    uint8_t *packed = read_geojson(text, &size);
+    assert(packed != NULL);
+    solar_os_map_geometry_t geometry;
+    assert(solar_os_map_geometry_parse(packed, size, &geometry) == ESP_OK);
+    solar_os_map_ring_cursor_t cursor = {0};
+    solar_os_map_ring_t ring;
+    assert(solar_os_map_geometry_next(&geometry, &cursor, &ring));
+    assert(ring.shift == 16U);
+    int32_t lat;
+    int32_t lon;
+    solar_os_map_ring_point(&ring, 0U, &lat, &lon);
+    assert(lat == -900000000 && lon == -1800000000);
+    solar_os_map_ring_point(&ring, 2U, &lat, &lon);
+    assert(lat <= 900000000 && 900000000 - lat < (1 << 16));
+    assert(lon <= 1800000000 && 1800000000 - lon < (1 << 16));
+    free(packed);
+}
+
 int main(void)
 {
     test_packed_layer();
@@ -403,6 +499,8 @@ int main(void)
     test_geojson_polygon();
     test_geojson_shapes();
     test_geojson_rejects();
+    test_points_round_trip();
+    test_points_span_the_world();
     printf("map_layers_test ok\n");
     return 0;
 }
