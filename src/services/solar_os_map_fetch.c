@@ -21,7 +21,12 @@
 static const char *TAG = "map_fetch";
 
 #define MAP_FETCH_ENDPOINT "https://overpass-api.de/api/interpreter"
-#define MAP_FETCH_TIMEOUT_MS 180000U
+/* How long the server may work on a query. */
+#define MAP_FETCH_TIMEOUT_S 60U
+/* How long the device waits for the whole answer, which arrives far
+ * slower than the server takes to make it: about a megabyte of a dense
+ * cell takes over a minute. */
+#define MAP_FETCH_DEADLINE_MS 180000U
 /*
  * What each tier asks for, the box filled in for every clause. The base
  * carries the water, the rivers that drain it, the railways and the roads
@@ -146,6 +151,11 @@ static esp_err_t map_fetch_pack(solar_os_inflate_t *reader,
 
 static bool map_fetch_running;
 static char map_fetch_message[64] = "";
+/* What is being fetched and how far it has got, read while it runs. */
+static char map_fetch_cell_name[SOLAR_OS_MAP_CELL_NAME_MAX];
+static solar_os_map_tier_t map_fetch_tier;
+static volatile solar_os_map_phase_t map_fetch_phase;
+static volatile size_t map_fetch_received;
 static uint32_t map_fetch_generation;
 
 /* Where the work happens is a task of its own, so the press that started it
@@ -166,9 +176,37 @@ bool solar_os_map_fetch_busy(void)
     return map_fetch_running;
 }
 
+/* What a reader calls each tier. */
+static const char *const map_fetch_tier_words[SOLAR_OS_MAP_TIER_COUNT] = {
+    [SOLAR_OS_MAP_TIER_BASE] = "map",
+    [SOLAR_OS_MAP_TIER_MINOR] = "roads",
+    [SOLAR_OS_MAP_TIER_STREETS] = "streets",
+};
+
 const char *solar_os_map_fetch_status(void)
 {
-    return map_fetch_message;
+    if (!map_fetch_running) {
+        return map_fetch_message;
+    }
+    static const char *const verbs[] = {
+        [SOLAR_OS_MAP_PHASE_REQUESTING] = "requesting",
+        [SOLAR_OS_MAP_PHASE_DOWNLOADING] = "downloading",
+        [SOLAR_OS_MAP_PHASE_PARSING] = "parsing",
+        [SOLAR_OS_MAP_PHASE_WRITING] = "writing",
+    };
+    static char line[sizeof(map_fetch_message)];
+    const solar_os_map_phase_t phase = map_fetch_phase;
+    const int used = snprintf(line, sizeof(line), "%s %s %s", verbs[phase],
+                              map_fetch_cell_name,
+                              map_fetch_tier_words[map_fetch_tier]);
+    /* The answer comes without a length, so how much has arrived is what
+     * there is to show, and a count that stops moving is a stall. */
+    if (phase == SOLAR_OS_MAP_PHASE_DOWNLOADING && used > 0 &&
+        (size_t)used < sizeof(line)) {
+        (void)snprintf(&line[used], sizeof(line) - (size_t)used, " %u KB",
+                       (unsigned)(map_fetch_received / 1024U));
+    }
+    return line;
 }
 
 static esp_err_t map_fetch_run(int32_t latitude_e7,
@@ -216,10 +254,10 @@ static esp_err_t map_fetch_run(int32_t latitude_e7,
     }
     char query[1600];
     (void)snprintf(query, sizeof(query),
-                   "[out:json][timeout:170];\n(\n%s);\nout %sgeom(%s);\n%s",
-                   clauses, spec->skeleton ? "skel " : "", box, corners);
+                   "[out:json][timeout:%u];\n(\n%s);\nout %sgeom(%s);\n%s",
+                   MAP_FETCH_TIMEOUT_S, clauses, spec->skeleton ? "skel " : "",
+                   box, corners);
 
-    char progress[sizeof(map_fetch_message)];
     const solar_os_map_download_t what = {
         .name = name,
         .url = MAP_FETCH_ENDPOINT,
@@ -227,35 +265,38 @@ static esp_err_t map_fetch_run(int32_t latitude_e7,
         .body = query,
         .body_len = strlen(query),
         .limit = SOLAR_OS_MAP_FETCH_MAX_BYTES,
-        .timeout_ms = MAP_FETCH_TIMEOUT_MS,
+        .timeout_ms = MAP_FETCH_DEADLINE_MS,
         .klass = spec->klass,
         .pack = map_fetch_pack,
         .pack_context = &cell,
-        .progress = progress,
-        .progress_capacity = sizeof(progress),
+        .phase = &map_fetch_phase,
+        .received = &map_fetch_received,
     };
     SOLAR_OS_LOGI(TAG, "asking overpass for %s (%s)", name, box);
 
-    /*
-     * The progress line is written where the work can update it and only
-     * copied out between phases, so a reader never sees half a message.
-     */
-    (void)snprintf(map_fetch_message, sizeof(map_fetch_message),
-                   "asking openstreetmap for %s", name);
     const esp_err_t error = solar_os_map_download(&what);
 
     /* Three things a reader can act on. The rest went to the log. */
     switch (error) {
     case ESP_OK:
         (void)snprintf(map_fetch_message, sizeof(map_fetch_message),
-                       "%s fetched", name);
+                       "fetched %s %s", map_fetch_cell_name,
+                       map_fetch_tier_words[tier]);
         break;
     case ESP_ERR_NOT_FOUND:
         strlcpy(map_fetch_message, "nothing mapped here",
                 sizeof(map_fetch_message));
         break;
+    case ESP_ERR_NOT_ALLOWED:
+        strlcpy(map_fetch_message, "openstreetmap rate limit, wait a minute",
+                sizeof(map_fetch_message));
+        break;
+    case ESP_ERR_INVALID_RESPONSE:
+        strlcpy(map_fetch_message, "openstreetmap busy, try again",
+                sizeof(map_fetch_message));
+        break;
     case ESP_ERR_TIMEOUT:
-        strlcpy(map_fetch_message, "openstreetmap busy, try later",
+        strlcpy(map_fetch_message, "openstreetmap timed out, try again",
                 sizeof(map_fetch_message));
         break;
     case ESP_ERR_INVALID_SIZE:
@@ -304,11 +345,14 @@ esp_err_t solar_os_map_fetch_cell(int32_t latitude_e7,
     job->latitude_e7 = latitude_e7;
     job->longitude_e7 = longitude_e7;
     job->tier = tier;
+    solar_os_map_cell_name_sized(latitude_e7, longitude_e7,
+                                 solar_os_map_tier_cell_e7(tier),
+                                 map_fetch_cell_name,
+                                 sizeof(map_fetch_cell_name));
+    map_fetch_tier = tier;
+    map_fetch_phase = SOLAR_OS_MAP_PHASE_REQUESTING;
+    map_fetch_received = 0U;
     map_fetch_running = true;
-    char name[SOLAR_OS_MAP_LAYER_NAME_MAX];
-    solar_os_map_tier_name(latitude_e7, longitude_e7, tier, name, sizeof(name));
-    (void)snprintf(map_fetch_message, sizeof(map_fetch_message),
-                   "asking openstreetmap for %s", name);
     /* Through the system's own task creation, so a download counts against
      * task admission and shows up in `mem policy` like every other task. */
     if (solar_os_task_create_pinned_internal(
