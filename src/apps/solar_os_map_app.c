@@ -88,15 +88,13 @@ typedef struct {
     char cell_name[SOLAR_OS_MAP_LAYER_NAME_MAX];
     bool tier_kept[SOLAR_OS_MAP_TIER_COUNT];
     bool tier_loaded[SOLAR_OS_MAP_TIER_COUNT];
-    /* A fetch runs elsewhere; these notice when it has finished. */
+    /* A fetch runs elsewhere; whether this app started it, so a failure is
+     * reported here. */
     bool watching_fetch;
-    uint32_t fetch_generation;
     bool watching_base;
     uint32_t base_generation;
     /* Whether the row was showing work last tick, so its end redraws. */
     bool was_working;
-    /* The cell a fetch was started for, so it can be drawn when it lands. */
-    char fetching[SOLAR_OS_MAP_LAYER_NAME_MAX];
     uint32_t cell_generation;
     size_t count;
     size_t total;
@@ -119,6 +117,9 @@ typedef struct {
 } map_app_state_t;
 
 static void *map_app_state;
+/* The last fetch the app has drawn, kept outside its state so a fetch that
+ * finishes while the app is closed is drawn when it opens. */
+static uint32_t map_app_fetch_seen;
 #define map_app (*(map_app_state_t *)map_app_state)
 
 static uint32_t map_app_now_ms(void)
@@ -1711,9 +1712,7 @@ static void map_app_cell_press(solar_os_context_t *ctx)
         map_app_say("%s", solar_os_map_fetch_status());
         return;
     }
-    map_app.fetch_generation = solar_os_map_fetch_generation();
     map_app.watching_fetch = true;
-    strlcpy(map_app.fetching, file, sizeof(map_app.fetching));
     map_app_say("fetching %s", file);
 }
 
@@ -1749,22 +1748,21 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
             map_app_say("%s", solar_os_map_base_status());
             map_app_forget_frame();
         }
-        if (map_app.watching_fetch &&
-            solar_os_map_fetch_generation() != map_app.fetch_generation) {
-            map_app.watching_fetch = false;
+        if (!solar_os_map_fetch_busy() &&
+            solar_os_map_fetch_generation() != map_app_fetch_seen) {
+            map_app_fetch_seen = solar_os_map_fetch_generation();
             /*
              * One press asked for a map, so one press gets a map: what the
-             * fetch brought back is drawn rather than waiting to be asked
-             * for a second time.
+             * fetch brought back is drawn, wherever the reticle has gone and
+             * whether or not the app was open when it landed.
              */
-            if (map_app.fetching[0] != '\0' &&
-                solar_os_map_layer_is_kept(map_app.fetching) &&
-                solar_os_map_layer_load_named(map_app.fetching) == ESP_OK) {
-                map_app_say("%s loaded", map_app.fetching);
-            } else {
+            const char *kept = solar_os_map_fetch_kept();
+            if (kept[0] != '\0' && solar_os_map_layer_load_named(kept) == ESP_OK) {
+                map_app_say("%s loaded", kept);
+            } else if (map_app.watching_fetch) {
                 map_app_say("%s", solar_os_map_fetch_status());
             }
-            map_app.fetching[0] = '\0';
+            map_app.watching_fetch = false;
             /* Whatever it found, what is on the card has changed. */
             map_app.cell_generation--;
             map_app_forget_frame();
