@@ -315,6 +315,15 @@ esp_err_t solar_os_map_layer_load(const char *path)
         }
     }
     const esp_err_t error = map_layer_load_file(path);
+    if (error == ESP_ERR_NOT_SUPPORTED) {
+        /* A kept copy in a format this firmware does not read is dropped,
+         * so it is fetched again rather than counted as kept. */
+        char kept[SOLAR_OS_STORAGE_PATH_MAX];
+        if (layer_store_path(name, kept, sizeof(kept), false) == ESP_OK &&
+            strcmp(kept, path) == 0) {
+            (void)solar_os_storage_remove(path);
+        }
+    }
     if (error != ESP_OK) {
         return error;
     }
