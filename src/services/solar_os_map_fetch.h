@@ -67,3 +67,7 @@ uint32_t solar_os_map_fetch_generation(void);
 
 /* What the last fetch did, for a reader to be told. */
 const char *solar_os_map_fetch_status(void);
+
+/* The layer the last fetch kept, or "" if it kept none, so whoever notices
+ * the fetch finish can load what it brought. */
+const char *solar_os_map_fetch_kept(void);
