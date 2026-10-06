@@ -1062,30 +1062,42 @@ static void map_app_draw_clock(solar_os_gfx_t *gfx, int baseline, int width)
  */
 static void map_app_draw_empty(solar_os_gfx_t *gfx, int top, int area)
 {
-    const char *lines[2] = {NULL, NULL};
+    const char *title;
+    const char *body;
     if (solar_os_map_base_busy()) {
-        lines[0] = "getting the world";
-        lines[1] = solar_os_map_base_status();
+        title = "Getting the world";
+        body = solar_os_map_base_status();
     } else if (!map_app_online()) {
-        lines[0] = "no world map yet";
-        lines[1] = "connect to wifi to download maps";
+        title = "No world map yet";
+        body = "connect to wifi to download maps";
     } else {
-        lines[0] = "no world map yet";
-        lines[1] = "run map base to download it";
+        title = "No world map yet";
+        body = "run map base to download it";
     }
     const int width = (int)solar_os_gfx_width(gfx);
-    int baseline = top + area / 2 - 4;
-    for (size_t index = 0U; index < 2U; index++) {
-        if (lines[index] == NULL || lines[index][0] == '\0') {
-            continue;
-        }
-        const int text_width = (int)solar_os_gfx_text_width(gfx, lines[index]);
-        int x = (width - text_width) / 2;
-        if (x < 2) {
-            x = 2;
-        }
-        solar_os_gfx_text(gfx, x, baseline, lines[index]);
-        baseline += 11;
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_BOLD_12);
+    int content = (int)solar_os_gfx_text_width(gfx, title);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    const bool has_body = body != NULL && body[0] != '\0';
+    if (has_body && (int)solar_os_gfx_text_width(gfx, body) > content) {
+        content = (int)solar_os_gfx_text_width(gfx, body);
+    }
+    int box_w = content + 16;
+    if (box_w > width - 16) {
+        box_w = width - 16;
+    }
+    const int box_h = has_body ? 38 : 24;
+    const int x = (width - box_w) / 2;
+    const int y = top + (area - box_h) / 2;
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+    solar_os_gfx_fill_rect(gfx, x, y, box_w, box_h);
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+    solar_os_gfx_rect(gfx, x, y, box_w, box_h);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_BOLD_12);
+    solar_os_gfx_text(gfx, x + 8, y + 16, title);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    if (has_body) {
+        solar_os_gfx_text(gfx, x + 8, y + 31, body);
     }
 }
 
