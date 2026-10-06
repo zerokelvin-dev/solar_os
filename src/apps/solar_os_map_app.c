@@ -66,6 +66,8 @@ typedef struct {
     bool follow_self;
     bool labels_hidden;
     bool feedback;
+    /* The progress line, which changes while nothing else does. */
+    char working[64];
     bool valid;
     uint32_t ticks;
 } map_app_painted_t;
@@ -1264,6 +1266,10 @@ static bool map_app_frame_is_current(void)
     solar_os_places_status_t status;
     const uint32_t generation =
         solar_os_places_get_status(&status) == ESP_OK ? status.generation : 0U;
+    const char *working = map_app_working();
+    if (working == NULL) {
+        working = "";
+    }
     const bool same =
         map_app.painted.valid &&
         map_app.painted.center_lat_e7 == map_app.center_lat_e7 &&
@@ -1275,7 +1281,10 @@ static bool map_app_frame_is_current(void)
         map_app.painted.path_count == map_app.path_count &&
         map_app.painted.follow_self == map_app.follow_self &&
         map_app.painted.labels_hidden == map_app.labels_hidden &&
-        map_app.painted.feedback == (map_app.feedback[0] != '\0');
+        map_app.painted.feedback == (map_app.feedback[0] != '\0') &&
+        strncmp(map_app.painted.working, working,
+                sizeof(map_app.painted.working) - 1U) == 0;
+    strlcpy(map_app.painted.working, working, sizeof(map_app.painted.working));
     map_app.painted.center_lat_e7 = map_app.center_lat_e7;
     map_app.painted.center_lon_e7 = map_app.center_lon_e7;
     map_app.painted.meters_per_px = map_app.meters_per_px;
