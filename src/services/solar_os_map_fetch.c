@@ -156,6 +156,7 @@ static char map_fetch_cell_name[SOLAR_OS_MAP_CELL_NAME_MAX];
 static solar_os_map_tier_t map_fetch_tier;
 static volatile solar_os_map_phase_t map_fetch_phase;
 static volatile size_t map_fetch_received;
+static char map_fetch_kept_name[SOLAR_OS_MAP_LAYER_NAME_MAX];
 static uint32_t map_fetch_generation;
 
 /* Where the work happens is a task of its own, so the press that started it
@@ -182,6 +183,11 @@ static const char *const map_fetch_tier_words[SOLAR_OS_MAP_TIER_COUNT] = {
     [SOLAR_OS_MAP_TIER_MINOR] = "roads",
     [SOLAR_OS_MAP_TIER_STREETS] = "streets",
 };
+
+const char *solar_os_map_fetch_kept(void)
+{
+    return map_fetch_running ? "" : map_fetch_kept_name;
+}
 
 const char *solar_os_map_fetch_status(void)
 {
@@ -279,6 +285,7 @@ static esp_err_t map_fetch_run(int32_t latitude_e7,
     /* Three things a reader can act on. The rest went to the log. */
     switch (error) {
     case ESP_OK:
+        strlcpy(map_fetch_kept_name, name, sizeof(map_fetch_kept_name));
         (void)snprintf(map_fetch_message, sizeof(map_fetch_message),
                        "fetched %s %s", map_fetch_cell_name,
                        map_fetch_tier_words[tier]);
@@ -350,6 +357,7 @@ esp_err_t solar_os_map_fetch_cell(int32_t latitude_e7,
                                  map_fetch_cell_name,
                                  sizeof(map_fetch_cell_name));
     map_fetch_tier = tier;
+    map_fetch_kept_name[0] = '\0';
     map_fetch_phase = SOLAR_OS_MAP_PHASE_REQUESTING;
     map_fetch_received = 0U;
     map_fetch_running = true;
