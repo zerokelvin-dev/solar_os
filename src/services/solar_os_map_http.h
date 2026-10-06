@@ -23,6 +23,15 @@
  * Written twice, one copy grew a fix the other did not.
  */
 
+/* How far a download has got. Requesting lasts until the first byte of the
+ * answer, which is the server's work; downloading is the transfer. */
+typedef enum {
+    SOLAR_OS_MAP_PHASE_REQUESTING = 0,
+    SOLAR_OS_MAP_PHASE_DOWNLOADING,
+    SOLAR_OS_MAP_PHASE_PARSING,
+    SOLAR_OS_MAP_PHASE_WRITING,
+} solar_os_map_phase_t;
+
 /* An answer being written to the card as it arrives. */
 typedef struct {
     FILE *file;
@@ -30,6 +39,10 @@ typedef struct {
     size_t limit;
     bool too_large;
     int status;
+    /* Moved on to downloading by the first byte, if set. */
+    volatile solar_os_map_phase_t *phase;
+    /* Bytes arrived so far, if set, for a progress line. */
+    volatile size_t *received;
 } solar_os_map_answer_t;
 
 /* Pass as the request's event_handler with an answer as its user_data. */
@@ -43,8 +56,9 @@ typedef esp_err_t (*solar_os_map_pack_fn)(solar_os_inflate_t *reader,
                                           uint8_t **out,
                                           size_t *out_size);
 
+
 typedef struct {
-    /* What the kept map is called, and what the progress line says. */
+    /* What the kept map is called. */
     const char *name;
     const char *url;
     solar_os_http_method_t method;
@@ -60,16 +74,18 @@ typedef struct {
     solar_os_map_pack_fn pack;
     /* Whatever the packer needs besides the answer, passed through. */
     const void *pack_context;
-    /* Where to write which phase the work has reached, if anywhere. */
-    char *progress;
-    size_t progress_capacity;
+    /* Where to record the phase the work has reached, if anywhere. */
+    volatile solar_os_map_phase_t *phase;
+    /* Where to count the bytes of the answer as they arrive, if anywhere. */
+    volatile size_t *received;
 } solar_os_map_download_t;
 
 /*
- * Asks, packs and keeps. Returns ESP_OK, or ESP_ERR_TIMEOUT when the
- * server said to come back later, ESP_ERR_NOT_FOUND when the answer held
- * no geometry, ESP_ERR_INVALID_SIZE when it was larger than the limit, and
- * ESP_FAIL otherwise. The status and the byte count go to the log, because
+ * Asks, packs and keeps. Returns ESP_OK, or ESP_ERR_NOT_ALLOWED when the
+ * server rate-limited this address, ESP_ERR_INVALID_RESPONSE when it was
+ * too busy, ESP_ERR_TIMEOUT when no answer came in time, ESP_ERR_NOT_FOUND
+ * when the answer held no geometry, ESP_ERR_INVALID_SIZE when it was larger
+ * than the limit, and ESP_FAIL otherwise. The status and the byte count go to the log, because
  * a number is no use to somebody holding the device.
  */
 esp_err_t solar_os_map_download(const solar_os_map_download_t *what);

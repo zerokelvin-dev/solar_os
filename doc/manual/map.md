@@ -105,11 +105,58 @@ means rather than the map: it is inflated as it is packed and then deleted.
 What is kept is the packed geometry, a tenth of the JSON, which needs no
 inflating to draw.
 
-The answer arrives over tens of seconds. `map fetch` waits for it and prints
-what happened; one fetch runs at a time, and a second one while the first is
-running is refused. An answer larger than 8 MB deflated is refused rather
-than stored, which is what `too much data for one cell` means. A cell nobody
-has mapped is reported as `nothing mapped here` and nothing is written.
+The query asks Overpass for at most 60 seconds of work. The answer then
+takes longer to arrive than to make, over a minute for a dense cell, so the
+device waits up to three minutes for all of it. `map fetch` waits for it and prints what
+happened; one fetch runs at a time, and a second one while the first is
+running is refused.
+
+While it runs, the row under the map says what it is doing and to which
+tier of which cell, `<verb> <cell> <tier>`, where the tier is `map`,
+`roads` or `streets`:
+
+| Line | What is happening |
+| --- | --- |
+| `requesting n4350w07950 map` | Overpass is working on the query; nothing has arrived yet |
+| `downloading n4350w07950 map 420 KB` | the answer is arriving, over a minute for a dense cell; the count is what has arrived so far, and a count that stops moving is a stalled link |
+| `parsing n4350w07950 map` | reading the answer into packed geometry |
+| `writing n4350w07950 map` | keeping the packed layer on the card |
+| `fetched n4350w07950 map` | done; the app draws the tier straight away |
+
+## When a fetch fails
+
+A fetch that fails says why on the same row, and writes nothing to the
+card. Nothing is retried for you and nothing holds you back from trying
+again: each message says whether pressing Enter again soon is worth it.
+
+| Message | What happened | What to do |
+| --- | --- | --- |
+| `openstreetmap busy, try again` | Overpass answered `504` or another `5xx`: too loaded to take the query | Try again; a few seconds later often works |
+| `openstreetmap rate limit, wait a minute` | Overpass answered `429`: this address has used its query slots | Wait about a minute before the next fetch |
+| `openstreetmap timed out, try again` | the whole answer had not arrived within three minutes | Check the network, then try again |
+| `nothing mapped here` | the answer held no geometry for this tier | Nothing; there is nothing to draw here |
+| `too much data for one cell` | the answer passed 8 MB deflated | Nothing; the cell is refused rather than stored |
+| `no storage for maps` | no card is mounted | Insert or mount a card |
+| `could not fetch <name>` | anything else, such as a failed connection or a malformed answer | `log show` has the detail |
+
+Overpass gives each address two query slots, and a finished query holds its
+slot for a cooldown that grows with how heavy the query was. A `429` means
+both are cooling down. The refusal itself does not say for how long, so the
+message does not either. Overpass reports it for the calling address at
+<https://overpass-api.de/api/status>, which a browser on the same network
+can read:
+
+```text
+Rate limit: 2
+1 slots available now.
+Slot available after: 2026-10-06T20:27:16Z, in 8 seconds.
+```
+
+A `504` is not about your usage: with slots free, a busy server still
+refuses a query it cannot fit in after about ten seconds.
+
+The HTTP status and the byte count of every answer go to the log, tagged
+`map_http`, where `log show` finds them.
 
 A fetched cell lands in `.map/layers/<cell>.bin` and is not loaded by the
 fetch. Each element's tags decide its class, so water, railways and roads
@@ -164,11 +211,11 @@ and one listing shows 64 of them, saying how many more there are. Loading
 by name or by number walks the directory, so a map is never out of reach
 for being kept late.
 
-Twelve layers may be loaded at once, but what actually runs out is memory,
-not slots: a world map is about 0.6 MiB of geometry, a quarter-degree cell
-of a dense city 1.2 to 1.7 MiB, and a rural one a fraction of that. Five
-mebibytes may be held in total, which `map status` reports beside the
-count. Loading past that puts away whichever layer has gone longest
+Thirty-two layers may be loaded at once, but what actually runs out is
+memory, not slots: the world is about 120 KiB of geometry, a quarter-degree
+base cell of a dense city around 300 KiB, and a rural one a fraction of
+that. Five mebibytes may be held in total, which `map status` reports
+beside the count. Loading past that puts away whichever layer has gone longest
 without being on screen, so panning across a city loads cells as they
 come into view and drops the ones behind without anybody managing it. A
 world layers are pinned, so they are never the ones put away, and they
@@ -207,7 +254,12 @@ already loaded replaces it rather than drawing it twice.
 
 Two formats are read, told apart by the file's first bytes rather than by
 its name. A packed layer (`.bin`) costs no parsing at all: its header says
-how many rings and points follow, so its size is read out of it. A GeoJSON
+how many rings and points follow, so its size is read out of it. A point is
+two 16-bit offsets from its ring's corner, about a metre apart across a
+whole cell and exact for a ring a few hundred metres wide. A kept layer in
+an older packed format is deleted the first time it fails to load, so the
+next press fetches it again rather than the card holding a map that never
+draws. A GeoJSON
 file is parsed by a character scanner rather than into a document, so a
 large file costs only its geometry in memory; polygons and lines are both
 read. A GeoJSON file carries no class of its own, so `map load` tags every
@@ -388,13 +440,8 @@ Overpass is a free service run by volunteers, with a stated limit of about
 10,000 requests and 1 GB a day across all of a user's traffic. It asks that
 callers not stitch bounding boxes together to scrape wide areas, and not
 point production applications at the public instance. That is why a fetch
-takes one cell, only when somebody asks for it, and keeps what it gets:
-`429` is Overpass rate limiting this address and `504` is the query giving
-up; both mean come back later rather than ask again now. The refusal carries
-a line of plain text saying which limit was hit, and that line is what the
-app shows, as `openstreetmap busy, try later`. The status and the byte
-count go to the log rather than the screen, where `log show` will find
-them: a status number is nothing a reader can act on.
+takes one cell, only when somebody asks for it, and keeps what it gets.
+What each refusal means is under "When a fetch fails" above.
 
 The world, whether fetched with `map base` or built with
 `scripts/build_map_basemap.py`, comes from

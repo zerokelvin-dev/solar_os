@@ -121,7 +121,6 @@ static esp_err_t map_base_one(size_t index)
     char url[256];
     (void)snprintf(url, sizeof(url), "%s%s", MAP_BASE_SOURCE,
                    map_base_layers[index].file);
-    char progress[sizeof(map_base_message)];
     const solar_os_map_download_t what = {
         .name = name,
         .url = url,
@@ -132,8 +131,6 @@ static esp_err_t map_base_one(size_t index)
         .follow_redirects = true,
         .klass = map_base_layers[index].klass,
         .pack = map_base_pack,
-        .progress = progress,
-        .progress_capacity = sizeof(progress),
     };
     (void)snprintf(map_base_message, sizeof(map_base_message),
                    "getting %s from natural earth", name);
