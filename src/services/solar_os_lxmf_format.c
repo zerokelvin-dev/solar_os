@@ -2,17 +2,20 @@
 
 #include <string.h>
 
+#define MSGPACK_FIXARRAY_0 0x90U
 #define MSGPACK_FIXARRAY_4 0x94U
 #define MSGPACK_FIXMAP_0 0x80U
 #define MSGPACK_NIL 0xC0U
 #define MSGPACK_BIN8 0xC4U
 #define MSGPACK_BIN16 0xC5U
+#define MSGPACK_BIN32 0xC6U
 #define MSGPACK_FLOAT32 0xCAU
 #define MSGPACK_FLOAT64 0xCBU
 #define MSGPACK_UINT32 0xCEU
 #define MSGPACK_UINT64 0xCFU
 #define MSGPACK_STR8 0xD9U
 #define MSGPACK_STR16 0xDAU
+#define MSGPACK_STR32 0xDBU
 #define MSGPACK_SKIP_DEPTH_MAX 8U
 
 typedef struct {
@@ -103,8 +106,8 @@ static bool skip_value(reader_t *reader, unsigned depth)
         case MSGPACK_STR16:
             return reader_count(reader, 2U, &count) &&
                    reader_take(reader, count, NULL);
-        case 0xC6U:  /* bin32 */
-        case 0xDBU:  /* str32 */
+        case MSGPACK_BIN32:
+        case MSGPACK_STR32:
             return reader_count(reader, 4U, &count) &&
                    reader_take(reader, count, NULL);
         case 0xC7U:  /* ext8 */
@@ -174,36 +177,16 @@ static bool skip_value(reader_t *reader, unsigned depth)
     return true;
 }
 
-/* Reads a msgpack string or binary blob of any width into text. */
-static bool read_text(reader_t *reader, char *text, size_t text_len, bool *truncated)
+void solar_os_lxmf_copy_text(const uint8_t *bytes,
+                             size_t len,
+                             char *text,
+                             size_t text_len,
+                             bool *truncated)
 {
-    uint8_t type = 0U;
-    if (!reader_byte(reader, &type)) {
-        return false;
+    if (text == NULL || text_len == 0U) {
+        return;
     }
-    size_t length = 0U;
-    if ((type & 0xE0U) == 0xA0U) {
-        length = type & 0x1FU;
-    } else if (type == MSGPACK_BIN8 || type == MSGPACK_STR8) {
-        if (!reader_count(reader, 1U, &length)) {
-            return false;
-        }
-    } else if (type == MSGPACK_BIN16 || type == MSGPACK_STR16) {
-        if (!reader_count(reader, 2U, &length)) {
-            return false;
-        }
-    } else if (type == MSGPACK_NIL) {
-        text[0] = '\0';
-        return true;
-    } else {
-        return false;
-    }
-
-    const uint8_t *bytes = NULL;
-    if (!reader_take(reader, length, &bytes)) {
-        return false;
-    }
-    size_t copied = length;
+    size_t copied = bytes != NULL ? len : 0U;
     if (copied > text_len - 1U) {
         copied = text_len - 1U;
         if (truncated != NULL) {
@@ -216,6 +199,47 @@ static bool read_text(reader_t *reader, char *text, size_t text_len, bool *trunc
         text[index] = (byte == '\n' || byte >= 0x20U) ? (char)byte : ' ';
     }
     text[copied] = '\0';
+}
+
+/* Finds a msgpack string or binary blob of any width; nil is an empty one. */
+static bool read_blob(reader_t *reader, const uint8_t **bytes, size_t *length)
+{
+    uint8_t type = 0U;
+    if (!reader_byte(reader, &type)) {
+        return false;
+    }
+    *bytes = NULL;
+    *length = 0U;
+    if ((type & 0xE0U) == 0xA0U) {
+        *length = type & 0x1FU;
+    } else if (type == MSGPACK_BIN8 || type == MSGPACK_STR8) {
+        if (!reader_count(reader, 1U, length)) {
+            return false;
+        }
+    } else if (type == MSGPACK_BIN16 || type == MSGPACK_STR16) {
+        if (!reader_count(reader, 2U, length)) {
+            return false;
+        }
+    } else if (type == MSGPACK_BIN32 || type == MSGPACK_STR32) {
+        if (!reader_count(reader, 4U, length)) {
+            return false;
+        }
+    } else if (type == MSGPACK_NIL) {
+        return true;
+    } else {
+        return false;
+    }
+    return reader_take(reader, *length, bytes);
+}
+
+static bool read_text(reader_t *reader, char *text, size_t text_len, bool *truncated)
+{
+    const uint8_t *bytes = NULL;
+    size_t length = 0U;
+    if (!read_blob(reader, &bytes, &length)) {
+        return false;
+    }
+    solar_os_lxmf_copy_text(bytes, length, text, text_len, truncated);
     return true;
 }
 
@@ -267,16 +291,19 @@ static size_t pack_blob(uint8_t *out,
                         const char *text)
 {
     const size_t length = text != NULL ? strlen(text) : 0U;
-    const size_t header = length < 256U ? 2U : 3U;
+    const size_t header = length < 256U ? 2U : (length < 65536U ? 3U : 5U);
     if (position + header + length > out_len) {
         return 0U;
     }
     if (length < 256U) {
         out[position] = MSGPACK_BIN8;
         out[position + 1U] = (uint8_t)length;
-    } else {
+    } else if (length < 65536U) {
         out[position] = MSGPACK_BIN16;
         write_be(&out[position + 1U], length, 2U);
+    } else {
+        out[position] = MSGPACK_BIN32;
+        write_be(&out[position + 1U], length, 4U);
     }
     memcpy(&out[position + header], text, length);
     return position + header + length;
@@ -337,8 +364,7 @@ bool solar_os_lxmf_unpack_payload(const uint8_t *data,
                    &payload->truncated)) {
         return false;
     }
-    if (!read_text(&reader, payload->content, sizeof(payload->content),
-                   &payload->truncated)) {
+    if (!read_blob(&reader, &payload->content, &payload->content_len)) {
         return false;
     }
     const size_t fields_start = reader.position;
@@ -373,14 +399,21 @@ size_t solar_os_lxmf_pack_announce(const char *display_name,
     if (out == NULL || out_len < 2U) {
         return 0U;
     }
-    /* [display name, stamp cost]; a nil cost demands no stamp. */
-    out[0] = 0x92U;
+    /*
+     * [display name, stamp cost, supported functionality]. A nil cost demands
+     * no stamp. The third says what a sender may rely on: listed empty, it
+     * tells a sender not to compress what it sends as a resource, which it
+     * otherwise does with bz2 and assumes of an announce with no third
+     * element at all.
+     */
+    out[0] = 0x93U;
     const size_t position = pack_blob(out, out_len, 1U, display_name);
-    if (position == 0U || position + 1U > out_len) {
+    if (position == 0U || position + 2U > out_len) {
         return 0U;
     }
     out[position] = MSGPACK_NIL;
-    return position + 1U;
+    out[position + 1U] = MSGPACK_FIXARRAY_0;
+    return position + 2U;
 }
 
 bool solar_os_lxmf_parse_announce(const uint8_t *data,
