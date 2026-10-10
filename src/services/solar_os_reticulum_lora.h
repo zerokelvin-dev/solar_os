@@ -21,6 +21,8 @@ public:
 
     uint32_t send_errors() const { return send_errors_; }
     uint32_t crc_errors() const { return crc_errors_; }
+    /* Times the radio was given its settings again after it was lost. */
+    uint32_t recoveries() const { return recoveries_; }
     bool heard() const { return heard_; }
     int16_t last_rssi_dbm() const { return last_rssi_; }
     int16_t last_snr_db() const { return last_snr_; }
@@ -34,6 +36,7 @@ protected:
 private:
     uint32_t airtime_ms(size_t length) const;
     void back_to_receive();
+    bool listen();
 
     solar_os_radio_handle_t handle_;
     solar_os_radio_config_t config_;
@@ -41,6 +44,12 @@ private:
     uint8_t packet_[SOLAR_OS_RNODE_MTU];
     uint32_t send_errors_ = 0;
     uint32_t crc_errors_ = 0;
+    uint32_t recoveries_ = 0;
+    /* Started and not stopped, whether or not the radio is answering. */
+    bool running_ = false;
+    /* The radio stopped answering or would not listen; see listen(). */
+    bool lost_ = false;
+    int64_t retry_at_us_ = 0;
     bool heard_ = false;
     int16_t last_rssi_ = 0;
     int16_t last_snr_ = 0;
