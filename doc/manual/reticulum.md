@@ -101,32 +101,42 @@ requests a path and sends once one arrives.
 
 The display name SolarOS announces is the device hostname.
 
-Sending is opportunistic: each message is one encrypted packet, signed with
-the node identity, addressed directly to the peer. That caps a message at 255
-bytes. A message shows as delivered once the peer's proof comes back.
+Sending is direct: SolarOS opens a link to the peer and sends the message
+over it, signed with the node identity. A message that fits one link packet,
+about 330 bytes, goes as a packet and shows as delivered once the peer's
+proof comes back. A longer one goes as a resource, in as many packets as it
+takes, and shows as delivered once the peer has confirmed the whole of it.
+The link is kept for the next message to the same peer and closed after ten
+minutes without use.
 
-Receiving takes both ways an LXMF client sends directly: an opportunistic
-packet, and a message over a link, which is what NomadNet and most clients
-use by default. A link message must fit one link packet, about 330 bytes of
-message; a longer one would arrive as a resource, which is refused.
-`reticulum lxmf status` counts the links peers have opened.
+Receiving takes every way an LXMF client sends directly: an opportunistic
+packet, a packet over a link, and a resource over a link. A message of more
+than 64 KB is refused when the peer offers it, before any of it is sent.
+A message longer than the message store keeps is stored cut short and marked
+as such. `reticulum lxmf status` counts the links opened in either direction.
+
+SolarOS has no bz2, which is how Reticulum compresses a resource. Its
+announce says so, in the field LXMF uses for this, and a peer running LXMF
+1.2 or later then sends uncompressed. A compressed resource is refused.
 
 Delivery follows the same shape as the LXMF router's outbound job, so a peer
 sees the behaviour it would see from any other LXMF sender. Attempts are
 driven by whether Reticulum has a path rather than by a clock alone: a try
-without a path is followed by a path request, and a try that fails with a
-path in hand treats that path as stale, drops it and asks again. Three
-attempts, ten seconds apart, and then the message is marked failed. LXMF
-itself allows five; three is enough on a link this slow.
+without a path is followed by a path request, and a try with one opens a
+link. A link that does not carry the message is closed, and the next try
+opens another. Three tries, ten seconds apart. After them a message that fits
+a single packet of 255 bytes is sent opportunistically, without a link, which
+reaches a peer that can hear a packet and not hold a link; a longer one is
+marked failed.
 
 A message queued while the job is stopped stays queued, and is sent when the
 job starts. The outbox is rebuilt at boot from the stored messages, so
 queued mail survives a restart, and a message whose provider is not running
 says so rather than sitting at queued with no explanation.
 
-There is no store-and-forward through a propagation node, no sending over
-links, and no resources, attachments, or stamps. A message to a peer that never becomes
-reachable fails rather than waiting for it.
+There is no store-and-forward through a propagation node, and no
+attachments or stamps. A message to a peer that never becomes reachable
+fails rather than waiting for it.
 
 Inbound messages are dropped unless their signature verifies against an
 identity SolarOS already knows, so a message from a peer that has never
@@ -136,7 +146,7 @@ announced is refused rather than shown unverified.
 
 - One TCP interface and one LoRa radio; no serial or local-network interfaces yet.
 - No transport (forwarding) mode.
-- LXMF sends opportunistically and receives single-packet messages, opportunistic or over a link; no propagation nodes, resources, or attachments.
+- LXMF sends and receives directly, up to 64 KB a message; no propagation nodes, attachments, or compressed resources.
 - The link MTU stays at the Reticulum default of 500 bytes.
 
 ## Quick reference

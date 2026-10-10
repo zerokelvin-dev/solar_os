@@ -39,6 +39,9 @@ constexpr int64_t kProcessingIntervalUs = 4LL * 1000000LL;
 constexpr int64_t kDeliveryRetryWaitUs = 10LL * 1000000LL;
 constexpr int64_t kPathRequestWaitUs = 7LL * 1000000LL;
 constexpr int16_t kProofTimeoutSeconds = 30;
+/* A link nothing has used for this long is closed, as the LXMF router
+ * closes its own: an open link costs keepalives on a slow channel. */
+constexpr double kLinkIdleSeconds = 600.0;
 constexpr size_t kOverhead =
     SOLAR_OS_LXMF_HASH_LEN + SOLAR_OS_LXMF_SIGNATURE_LEN;
 /*
@@ -54,7 +57,15 @@ struct Pending {
     bool concluded;
     uint32_t request_id;
     uint8_t attempts;
+    /* On the link and not yet answered. */
+    bool sending;
+    /* The link did not carry it. A link that fails a message is taken for
+     * dead, so the next attempt opens another and counts as a try. */
+    bool link_failed;
+    /* The tries for a link ran out and it is going as a single packet. */
+    bool opportunistic;
     int64_t next_attempt_us;
+    uint64_t timestamp_ms;
     RNS::Bytes destination;
 };
 
@@ -82,6 +93,10 @@ EXT_RAM_BSS_ATTR char pending_body[SOLAR_OS_MESSAGING_BODY_MAX];
 EXT_RAM_BSS_ATTR char inbound_body[SOLAR_OS_MESSAGING_BODY_MAX];
 
 RNS::Destination inbound({RNS::Type::NONE});
+/* The one link this sends on, and whose it is. Kept after a message so the
+ * next to the same peer does not pay for another. */
+RNS::Link direct({RNS::Type::NONE});
+RNS::Bytes direct_peer;
 RNS::HAnnounceHandler announce_handler;
 
 class Guard {
@@ -374,6 +389,48 @@ void fail(uint32_t request_id, const char *reason)
 }
 
 /*
+ * The message as its sender signs it: sender hash, signature, payload. An
+ * opportunistic packet carries exactly this, and a link carries it with the
+ * recipient hash in front. Built from the time the message was queued, so
+ * that every attempt is the same message to whoever receives two of them.
+ */
+bool build_message(RNS::Bytes &message)
+{
+    const size_t room = strlen(pending_body) + 32U;
+    RNS::Bytes payload;
+    uint8_t *packed = payload.writable(room);
+    if (packed == nullptr) {
+        return false;
+    }
+    const size_t payload_len = solar_os_lxmf_pack_payload(
+        (double)pending.timestamp_ms / 1000.0, "", pending_body, packed, room);
+    if (payload_len == 0U) {
+        return false;
+    }
+    payload.resize(payload_len);
+
+    RNS::Bytes hashed_part(pending.destination);
+    hashed_part.append(inbound.hash());
+    hashed_part.append(payload);
+    RNS::Bytes signed_part(hashed_part);
+    signed_part.append(RNS::Identity::full_hash(hashed_part));
+
+    message = inbound.hash();
+    message.append(inbound.identity().sign(signed_part));
+    message.append(payload);
+    return true;
+}
+
+RNS::Destination delivery_destination(const RNS::Identity &peer)
+{
+    return RNS::Destination(peer,
+                            RNS::Type::Destination::OUT,
+                            RNS::Type::Destination::SINGLE,
+                            SOLAR_OS_LXMF_APP_NAME,
+                            SOLAR_OS_LXMF_ASPECT);
+}
+
+/*
  * Returns false when this attempt could not be made. That is not a failure:
  * the peer's identity arrives with its announce and its path arrives with a
  * path request, so an attempt that finds neither is simply early. Only the
@@ -386,36 +443,12 @@ bool transmit()
         RNS::Transport::request_path(pending.destination);
         return false;
     }
-    char name[SOLAR_OS_LXMF_NAME_MAX + 1U];
-    display_name(name, sizeof(name));
-
-    uint8_t payload[SOLAR_OS_LXMF_PAYLOAD_MAX];
-    const uint64_t timestamp_ms = now_ms();
-    const size_t payload_len = solar_os_lxmf_pack_payload(
-        (double)timestamp_ms / 1000.0, "", pending_body, payload,
-        sizeof(payload));
-    if (payload_len == 0U ||
-        payload_len + kOverhead > SOLAR_OS_LXMF_PACKET_MAX) {
-        /* Permanent: no number of attempts shortens a message. */
-        fail(pending.request_id, "Reticulum message exceeds one packet");
+    RNS::Bytes wire;
+    if (!build_message(wire)) {
+        fail(pending.request_id, "Reticulum message could not be packed");
         return false;
     }
-
-    RNS::Destination out(peer,
-                         RNS::Type::Destination::OUT,
-                         RNS::Type::Destination::SINGLE,
-                         SOLAR_OS_LXMF_APP_NAME,
-                         SOLAR_OS_LXMF_ASPECT);
-
-    RNS::Bytes hashed_part(pending.destination);
-    hashed_part.append(inbound.hash());
-    hashed_part.append(RNS::Bytes(payload, payload_len));
-    RNS::Bytes signed_part(hashed_part);
-    signed_part.append(RNS::Identity::full_hash(hashed_part));
-
-    RNS::Bytes wire(inbound.hash());
-    wire.append(inbound.identity().sign(signed_part));
-    wire.append(RNS::Bytes(payload, payload_len));
+    RNS::Destination out = delivery_destination(peer);
 
     const uint32_t request_id = pending.request_id;
     RNS::Packet packet(out, wire);
@@ -439,11 +472,11 @@ bool transmit()
 }
 
 /*
- * One step of the outbound job. Mirrors the opportunistic branch of the
- * LXMF router: try, then ask for a path, then distrust the path you have,
- * then give up.
+ * One step of the outbound job without a link. Mirrors the opportunistic
+ * branch of the LXMF router: try, then ask for a path, then distrust the
+ * path you have, then give up.
  */
-void process_outbound()
+void process_opportunistic()
 {
     const int64_t now = esp_timer_get_time();
     if (pending.attempts > kMaxDeliveryAttempts) {
@@ -473,6 +506,149 @@ void process_outbound()
     }
 }
 
+void drop_link()
+{
+    if (direct) {
+        try {
+            direct.teardown();
+        } catch (const std::exception &failure) {
+            SOLAR_OS_LOGW(TAG, "link not closed: %s", failure.what());
+        }
+    }
+    direct = RNS::Link({RNS::Type::NONE});
+    direct_peer = RNS::Bytes();
+}
+
+/* The outbound job waits out its interval; a link that has come up is
+ * what it was waiting for. */
+void link_ready(RNS::Link &)
+{
+    counters.links++;
+    last_process_us = 0;
+}
+
+/* How a message sent as a resource ended. */
+void resource_sent(const RNS::Resource &resource)
+{
+    if (!pending.active || !pending.sending) {
+        return;
+    }
+    if (resource.status() == RNS::Type::Resource::COMPLETE) {
+        conclude(pending.request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
+        return;
+    }
+    pending.sending = false;
+    pending.link_failed = true;
+    pending.next_attempt_us = esp_timer_get_time() + kDeliveryRetryWaitUs;
+}
+
+/*
+ * Sends the message on the link that is up: in one packet if it fits, as a
+ * resource if it does not. Not compressed, since the only compression a peer
+ * would undo is one this does not have.
+ */
+void send_over_link()
+{
+    RNS::Bytes message;
+    if (!build_message(message)) {
+        fail(pending.request_id, "Reticulum message could not be packed");
+        return;
+    }
+    RNS::Bytes wire(pending.destination);
+    wire.append(message);
+    if (wire.size() > kMessageMax) {
+        /* Permanent: no number of attempts shortens a message. */
+        fail(pending.request_id, "Reticulum message is too long");
+        return;
+    }
+    const uint32_t request_id = pending.request_id;
+    if (wire.size() <= SOLAR_OS_LXMF_LINK_PACKET_MAX) {
+        RNS::Packet packet(direct, wire);
+        RNS::PacketReceipt receipt = packet.receipt_send();
+        if (!receipt) {
+            return;
+        }
+        receipt.set_timeout(kProofTimeoutSeconds);
+        receipt.set_delivery_handler([request_id](const RNS::PacketReceipt &) {
+            conclude(request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
+        });
+        receipt.set_timeout_handler([request_id](const RNS::PacketReceipt &) {
+            if (pending.active && pending.request_id == request_id) {
+                pending.sending = false;
+                pending.link_failed = true;
+            }
+        });
+    } else {
+        RNS::Resource resource(wire, direct, true, false, resource_sent);
+        if (!resource) {
+            return;
+        }
+    }
+    counters.sent++;
+    pending.sending = true;
+}
+
+/*
+ * One step of the outbound job. Mirrors the direct branch of the LXMF
+ * router: use the link to the peer if there is one, open one if there is a
+ * path, ask for a path if there is not, and count the tries. A message that
+ * fits one packet is sent without a link once the tries for one run out,
+ * which is what reaches a peer that can hear a packet and not hold a link.
+ */
+void process_outbound()
+{
+    if (pending.opportunistic) {
+        process_opportunistic();
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (direct && (pending.link_failed ||
+                   direct_peer != pending.destination)) {
+        drop_link();
+    }
+    pending.link_failed = false;
+    if (direct) {
+        switch (direct.status()) {
+        case RNS::Type::Link::ACTIVE:
+            if (!pending.sending && now > pending.next_attempt_us) {
+                send_over_link();
+            }
+            return;
+        case RNS::Type::Link::CLOSED:
+            drop_link();
+            pending.sending = false;
+            pending.next_attempt_us = now + kDeliveryRetryWaitUs;
+            return;
+        default:
+            return; /* still being established */
+        }
+    }
+    if (now <= pending.next_attempt_us) {
+        return;
+    }
+    if (pending.attempts >= kMaxDeliveryAttempts) {
+        if (strlen(pending_body) + kOverhead + 16U <= SOLAR_OS_LXMF_PACKET_MAX) {
+            pending.opportunistic = true;
+            pending.attempts = 0U;
+            pending.next_attempt_us = 0;
+            process_opportunistic();
+        } else {
+            fail(pending.request_id, "no link to the Reticulum peer");
+        }
+        return;
+    }
+    pending.attempts++;
+    pending.next_attempt_us = now + kDeliveryRetryWaitUs;
+    RNS::Identity peer = RNS::Identity::recall(pending.destination);
+    if (!peer || !RNS::Transport::has_path(pending.destination)) {
+        RNS::Transport::request_path(pending.destination);
+        pending.next_attempt_us = now + kPathRequestWaitUs;
+        return;
+    }
+    direct = RNS::Link(delivery_destination(peer), link_ready);
+    direct_peer = pending.destination;
+}
+
 void start_next()
 {
     solar_os_messaging_outbound_t outbound = {};
@@ -480,9 +656,10 @@ void start_next()
                                        &outbound) != ESP_OK) {
         return;
     }
-    memset(&pending, 0, sizeof(pending));
+    pending = Pending{};
     pending.active = true;
     pending.request_id = outbound.id;
+    pending.timestamp_ms = now_ms();
     strlcpy(pending_body, outbound.body, sizeof(pending_body));
 
     solar_os_messaging_conversation_t conversation = {};
@@ -525,7 +702,7 @@ esp_err_t attach(const RNS::Identity &identity)
         return ESP_FAIL;
     }
     attached = true;
-    memset(&pending, 0, sizeof(pending));
+    pending = Pending{};
     (void)solar_os_messaging_init();
     (void)solar_os_messaging_provider_register(
         SOLAR_OS_MESSAGING_PROVIDER_RETICULUM, "Reticulum");
@@ -545,8 +722,9 @@ void detach()
          * queue so it is tried again when Reticulum returns. */
         (void)solar_os_messaging_outbox_update(
             pending.request_id, SOLAR_OS_DELIVERY_QUEUED, nullptr);
-        memset(&pending, 0, sizeof(pending));
+        pending = Pending{};
     }
+    drop_link();
     try {
         RNS::Transport::deregister_announce_handler(announce_handler);
     } catch (const std::exception &failure) {
@@ -591,6 +769,11 @@ void tick()
             }
             if (!pending.active) {
                 start_next();
+            }
+            if (!pending.active && direct &&
+                (direct.status() == RNS::Type::Link::CLOSED ||
+                 direct.inactive_for() > kLinkIdleSeconds)) {
+                drop_link();
             }
         }
     } catch (const std::exception &failure) {

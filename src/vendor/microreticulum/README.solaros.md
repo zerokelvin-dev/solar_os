@@ -36,6 +36,9 @@ microStore adapter except the POSIX one. See `EXCLUDED` in the script.
   HMAC key schedule, so every MAC was self-consistent garbage. Announces still
   verified because Ed25519 avoids this path, while every encrypted packet from a
   reference Reticulum peer failed its token HMAC.
+- `0005-link-proof-validate.patch`: the check of a proof for a packet sent over a link
+  was stubbed out to false, so such a packet was never marked delivered and its
+  delivery callback never ran.
 - `overlay/microReticulum/Utilities/Memory.{h,cpp}`: no TLSF pools; containers use
   `operator new`; heap statistics come from `heap_caps_*`.
 - `overlay/microReticulum.h`: umbrella header without Provisioning.
