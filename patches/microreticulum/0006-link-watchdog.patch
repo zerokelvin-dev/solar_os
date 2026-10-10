@@ -1,0 +1,320 @@
+Run the link watchdog
+
+The watchdog of the Python reference was never ported: start_watchdog()
+was empty and the loop sat beneath it as a comment. So a link request that
+drew no proof stayed pending for ever, an initiator sent no keepalives, and
+a link whose peer had gone was never found stale or closed.
+
+The watchdog is now one pass of the reference loop, run for every pending
+and active link by Transport::jobs(). With it come the pieces the loop
+reads: the keepalive interval is derived from the round-trip time when a
+link comes up, had_outbound() records the time of a keepalive, and a proved
+link packet records the time of the proof.
+
+It runs after the job loop has finished, not inside it, and the resource
+watchdogs move there with it. Transport::outbound() waits for the job loop
+to finish, so a packet sent from inside the loop waited for ever: a
+resource watchdog asking again for a lost part would have hung the caller.
+
+--- a/microReticulum/Link.cpp
++++ b/microReticulum/Link.cpp
+@@ -473,6 +473,7 @@
+ 					_object->_status = Type::Link::ACTIVE;
+ 					_object->_activated_at = OS::time();
+ 					_object->_last_proof = _object->_activated_at;
++					update_keepalive();
+ 					Transport::activate_link(*this);
+ 					VERBOSEF("Link %s established with %s, RTT is %.3f s", toString().c_str(), _object->_destination.toString().c_str(), OS::round(_object->_rtt, 3));
+ 					
+@@ -636,6 +637,7 @@
+ 			_object->_rtt = std::max(measured_rtt, rtt);
+ 			_object->_status = Type::Link::ACTIVE;
+ 			_object->_activated_at = OS::time();
++			update_keepalive();
+ 
+ 			//p if _object->_rtt != None and _object->_establishment_cost != None and _object->_rtt > 0 and _object->_establishment_cost > 0:
+ 			if (_object->_rtt != 0.0 && _object->_establishment_cost != 0.0 && _object->_rtt > 0 and _object->_establishment_cost > 0) {
+@@ -780,6 +782,9 @@
+ 	if (!is_keepalive) {
+ 		_object->_last_data = _object->_last_outbound;
+ 	}
++	else {
++		_object->_last_keepalive = _object->_last_outbound;
++	}
+ }
+ 
+ /*
+@@ -880,87 +885,81 @@
+ 	for (auto& r : outgoing) r.__watchdog_job();
+ }
+ 
+-// CBA TODO Implement watchdog
++// The Python reference runs the watchdog in a thread per link. Here it is one
++// pass of that loop, called for every pending and active link from
++// Transport::jobs(), the same way tick_resources() is.
+ void Link::start_watchdog() {
+-	//z thread = threading.Thread(target=_object->___watchdog_job)
+-	//z thread.daemon = True
+-	//z thread.start()
+ }
+ 
+-/*p TODO
+-
+ void Link::__watchdog_job() {
+ 	assert(_object);
+-	while not _object->_status == Type::Link::CLOSED:
+-		while (_object->_watchdog_lock):
+-			rtt_wait = 0.025
+-			if hasattr(self, "rtt") and _object->_rtt:
+-				rtt_wait = _object->_rtt
++	if (_object->_watchdog_lock) {
++		return;
++	}
++	const double now = OS::time();
++	switch (_object->_status) {
++		// Link was initiated, but no response from destination yet,
++		// or the handshake was never completed
++		case Type::Link::PENDING:
++		case Type::Link::HANDSHAKE:
++		{
++			if (now >= _object->_request_time + _object->_establishment_timeout) {
++				if (_object->_status == Type::Link::PENDING) {
++					VERBOSE("Link establishment timed out");
++				}
++				else if (_object->_initiator) {
++					DEBUG("Timeout waiting for link request proof");
++				}
++				else {
++					DEBUG("Timeout waiting for RTT packet from link initiator");
++				}
++				_object->_status = Type::Link::CLOSED;
++				_object->_teardown_reason = Type::Link::TIMEOUT;
++				link_closed();
++			}
++			break;
++		}
++		case Type::Link::ACTIVE:
++		{
++			const double last_inbound = std::max(std::max(_object->_last_inbound, _object->_last_proof), _object->_activated_at);
++			if (now >= last_inbound + _object->_keepalive || now >= _object->_last_outbound + _object->_keepalive) {
++				if (_object->_initiator && now >= _object->_last_keepalive + _object->_keepalive) {
++					send_keepalive();
++				}
++				if (now >= last_inbound + _object->_stale_time) {
++					_object->_status = Type::Link::STALE;
++				}
++			}
++			break;
++		}
++		// The reference sleeps out the grace period after marking a link
++		// stale; a packet arriving in that time makes it active again.
++		case Type::Link::STALE:
++		{
++			const double last_inbound = std::max(std::max(_object->_last_inbound, _object->_last_proof), _object->_activated_at);
++			const double grace = _object->_rtt * _object->_keepalive_timeout_factor + Type::Link::STALE_GRACE;
++			if (now >= last_inbound + _object->_stale_time + grace) {
++				Packet(*this, _object->_link_id).context(Type::Packet::LINKCLOSE).send();
++				had_outbound();
++				_object->_status = Type::Link::CLOSED;
++				_object->_teardown_reason = Type::Link::TIMEOUT;
++				link_closed();
++			}
++			break;
++		}
++		default:
++			break;
++	}
++}
+ 
+-			sleep(max(rtt_wait, 0.025))
++void Link::update_keepalive() {
++	assert(_object);
++	//p self.keepalive = max(min(self.rtt*(Link.KEEPALIVE_MAX/Link.KEEPALIVE_MAX_RTT), Link.KEEPALIVE_MAX), Link.KEEPALIVE_MIN)
++	const double keepalive = _object->_rtt * (Type::Link::KEEPALIVE_MAX / Type::Link::KEEPALIVE_MAX_RTT);
++	_object->_keepalive = (uint16_t)std::max(std::min(keepalive, (double)Type::Link::KEEPALIVE_MAX), (double)Type::Link::KEEPALIVE_MIN);
++	_object->_stale_time = _object->_keepalive * Type::Link::STALE_FACTOR;
++}
+ 
+-		if not _object->_status == Type::Link::CLOSED:
+-			# Link was initiated, but no response
+-			# from destination yet
+-			if _object->_status == PENDING:
+-				next_check = _object->_request_time + _object->_establishment_timeout
+-				sleep_time = next_check - OS::time()
+-				if OS::time() >= _object->_request_time + _object->_establishment_timeout:
+-					RNS.log("Link establishment timed out", RNS.LOG_VERBOSE)
+-					_object->_status = Type::Link::CLOSED
+-					_object->_teardown_reason = TIMEOUT
+-					link_closed()
+-					sleep_time = 0.001
+-
+-			elif _object->_status == Type::Link::HANDSHAKE:
+-				next_check = _object->_request_time + _object->_establishment_timeout
+-				sleep_time = next_check - OS::time()
+-				if OS::time() >= _object->_request_time + _object->_establishment_timeout:
+-					_object->_status = Type::Link::CLOSED
+-					_object->_teardown_reason = TIMEOUT
+-					link_closed()
+-					sleep_time = 0.001
+-
+-					if _object->_initiator:
+-						RNS.log("Timeout waiting for link request proof", RNS.LOG_DEBUG)
+-					else:
+-						RNS.log("Timeout waiting for RTT packet from link initiator", RNS.LOG_DEBUG)
+-
+-			elif _object->_status == Type::Link::ACTIVE:
+-				activated_at = _object->_activated_at if _object->_activated_at != None else 0
+-				last_inbound = max(max(_object->_last_inbound, _object->_last_proof), activated_at)
+-
+-				if OS::time() >= last_inbound + _object->_keepalive:
+-					if _object->_initiator:
+-						send_keepalive()
+-
+-					if OS::time() >= last_inbound + _object->_stale_time:
+-						sleep_time = _object->_rtt * _object->_keepalive_timeout_factor + STALE_GRACE
+-						_object->_status = STALE
+-					else:
+-						sleep_time = _object->_keepalive
+-				
+-				else:
+-					sleep_time = (last_inbound + _object->_keepalive) - OS::time()
+-
+-			elif _object->_status == STALE:
+-				sleep_time = 0.001
+-				_object->_status = Type::Link::CLOSED
+-				_object->_teardown_reason = TIMEOUT
+-				link_closed()
+-
+-
+-			if sleep_time == 0:
+-				RNS.log("Warning! Link watchdog sleep time of 0!", RNS.LOG_ERROR)
+-			if sleep_time == None or sleep_time < 0:
+-				RNS.log("Timing error! Tearing down link "+str(self)+" now.", RNS.LOG_ERROR)
+-				teardown()
+-				sleep_time = 0.1
+-
+-			sleep(sleep_time)
+-
+-*/
+-
+ void Link::send_keepalive() {
+ 	assert(_object);
+     //p keepalive_packet = RNS.Packet(self, bytes([0xFF]), context=RNS.Packet.KEEPALIVE)
+@@ -1842,6 +1841,11 @@
+ void Link::last_inbound(double time) {
+ 	assert(_object);
+ 	_object->_last_inbound = time;
++}
++
++void Link::last_proof(double time) {
++	assert(_object);
++	_object->_last_proof = time;
+ }
+ 
+ void Link::last_outbound(double time) {
+--- a/microReticulum/Link.h
++++ b/microReticulum/Link.h
+@@ -213,6 +213,7 @@
+ 		void link_closed();
+ 		void start_watchdog();
+ 		void __watchdog_job();
++		void update_keepalive();
+ 		// Cooperative pump: iterate this link's incoming/outgoing resources
+ 		// and tick each Resource::__watchdog_job(). Safe to call from
+ 		// Transport::jobs() — snapshots both sets before pumping so that a
+@@ -276,6 +277,7 @@
+ 		void establishment_cost(uint16_t cost);
+ 		void request_time(double time);
+ 		void last_inbound(double time);
++		void last_proof(double time);
+ 		void last_outbound(double time);
+ 		void increment_tx();
+ 		void increment_txbytes(uint16_t bytes);
+--- a/microReticulum/Packet.cpp
++++ b/microReticulum/Packet.cpp
+@@ -903,14 +903,14 @@
+ 		Bytes proof_hash = proof.left(Type::Identity::HASHLENGTH/8);
+ 		Bytes signature = proof.mid(Type::Identity::HASHLENGTH/8, Type::Identity::SIGLENGTH/8);
+ 		if (proof_hash == _object->_hash) {
+-			// Link is a handle on shared state; validating reads the peer's key.
++			// Link is a handle on shared state, so a copy reaches the same link.
+ 			Link proving(link);
+ 			if (proving.validate(signature, _object->_hash)) {
+ 				_object->_status = DELIVERED;
+ 				_object->_proved = true;
+ 				_object->_concluded_at = OS::time();
+ 				//z _object->_proof_packet = proof_packet;
+-				//z link.last_proof(_object->_concluded_at);
++				proving.last_proof(_object->_concluded_at);
+ 
+ 				// Prefer std::function handler over legacy
+ 				// function-pointer callback so capture-bearing handlers
+--- a/microReticulum/Transport.cpp
++++ b/microReticulum/Transport.cpp
+@@ -496,6 +496,7 @@
+ 
+ 	std::vector<Packet> outgoing;
+ 	std::map<Bytes, Interface> path_requests;	// destination_hash -> blocked_interface ({NONE} = no interface to avoid)
++	std::vector<Link> watched_links;
+ 	int count;
+ 	_jobs_running = true;
+ 
+@@ -542,19 +543,9 @@
+ 					}
+ 				}
+ 
+-				// Pump each active link's resource watchdogs. Resource
+-				// retransmit/timeout retries depend on this — without it,
+-				// a dropped resource part stalls the transfer forever
+-				// (we never re-request the missing part, server gives up).
+-				// const_cast mirrors the pattern used elsewhere when
+-				// iterating std::set<Link> — the wrapper is const but
+-				// shared_ptr-backed mutation is the codebase convention.
+-				for (auto& link_const : active_links) {
+-					Link& link = const_cast<Link&>(link_const);
+-					if (link.status() != Type::Link::CLOSED) {
+-						link.tick_resources();
+-					}
+-				}
++				// The watchdogs of these links run once jobs are done
++				watched_links.insert(watched_links.end(), _pending_links.begin(), _pending_links.end());
++				watched_links.insert(watched_links.end(), _active_links.begin(), _active_links.end());
+ 
+ 				_links_last_checked = OS::time();
+ 			}
+@@ -1045,6 +1036,20 @@
+ 	}
+ 
+ 	_jobs_running = false;
++
++	// The Python reference runs each link's watchdog, and through it the
++	// watchdogs of the link's resources, in a thread of its own. Both send
++	// packets: a keepalive, a teardown, a resource part asked for again. They
++	// run here rather than above because outbound() waits for jobs to finish,
++	// and would wait for ever on a send made while they run.
++	for (auto& link : watched_links) {
++		if (link.status() != Type::Link::CLOSED) {
++			link.__watchdog_job();
++		}
++		if (link.status() != Type::Link::CLOSED) {
++			link.tick_resources();
++		}
++	}
+ 
+ 	// CBA send announce retransmission packets
+ 	for (auto& packet : outgoing) {
+--- a/microReticulum/Type.h
++++ b/microReticulum/Type.h
+@@ -307,8 +307,10 @@
+ 		static const uint8_t KEEPALIVE_TIMEOUT_FACTOR = 4;
+ 		// Grace period in seconds used in link timeout calculation.
+ 		static const uint8_t STALE_GRACE = 5;
+-		// Interval for sending keep-alive packets on established links in seconds.
+-		static const uint16_t KEEPALIVE = 360;
++		static const uint16_t KEEPALIVE_MAX = 360;
++		static const uint16_t KEEPALIVE_MIN = 5;
++		// Default interval for sending keep-alive packets on established links in seconds.
++		static const uint16_t KEEPALIVE = KEEPALIVE_MAX;
+ 		/*
+ 		If no traffic or keep-alive packets are received within this period, the
+ 		link will be marked as stale, and a final keep-alive packet will be sent.
