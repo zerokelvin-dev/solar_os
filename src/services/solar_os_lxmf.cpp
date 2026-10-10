@@ -39,8 +39,8 @@ constexpr int64_t kProcessingIntervalUs = 4LL * 1000000LL;
 constexpr int64_t kDeliveryRetryWaitUs = 10LL * 1000000LL;
 constexpr int64_t kPathRequestWaitUs = 7LL * 1000000LL;
 constexpr int16_t kProofTimeoutSeconds = 30;
-/* A link nothing has used for this long is closed, as the LXMF router
- * closes its own: an open link costs keepalives on a slow channel. */
+/* A link that has carried no message for this long is closed, as the LXMF
+ * router closes its own: an open link costs keepalives on a slow channel. */
 constexpr double kLinkIdleSeconds = 600.0;
 constexpr size_t kOverhead =
     SOLAR_OS_LXMF_HASH_LEN + SOLAR_OS_LXMF_SIGNATURE_LEN;
@@ -772,7 +772,7 @@ void tick()
             }
             if (!pending.active && direct &&
                 (direct.status() == RNS::Type::Link::CLOSED ||
-                 direct.inactive_for() > kLinkIdleSeconds)) {
+                 direct.no_data_for() > kLinkIdleSeconds)) {
                 drop_link();
             }
         }

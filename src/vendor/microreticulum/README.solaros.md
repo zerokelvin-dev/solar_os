@@ -39,6 +39,16 @@ microStore adapter except the POSIX one. See `EXCLUDED` in the script.
 - `0005-link-proof-validate.patch`: the check of a proof for a packet sent over a link
   was stubbed out to false, so such a packet was never marked delivered and its
   delivery callback never ran.
+- `0006-link-watchdog.patch`: the link watchdog of the Python reference was never
+  ported, so a link request that drew no proof stayed pending for ever, an initiator
+  sent no keepalives, and a dead link was never found stale. It is now one pass of the
+  reference loop per link, run by `Transport::jobs()` after its loop has finished, and
+  the resource watchdogs run there too: `Transport::outbound()` waits for the loop to
+  finish, so a packet sent from inside it never returned.
+- `0007-link-teardown-once.patch`: `Link::teardown()` on a closed link closed it again,
+  firing the closed callback twice. The reference returns at once.
+- `0008-receipt-timeout-after-jobs.patch`: a receipt's timeout callback ran inside the
+  job loop, where a callback that sends never returns. The check runs after the loop.
 - `overlay/microReticulum/Utilities/Memory.{h,cpp}`: no TLSF pools; containers use
   `operator new`; heap statistics come from `heap_caps_*`.
 - `overlay/microReticulum.h`: umbrella header without Provisioning.
