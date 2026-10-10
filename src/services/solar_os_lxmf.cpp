@@ -4,6 +4,7 @@
 
 #include <exception>
 
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -40,6 +41,13 @@ constexpr int64_t kPathRequestWaitUs = 7LL * 1000000LL;
 constexpr int16_t kProofTimeoutSeconds = 30;
 constexpr size_t kOverhead =
     SOLAR_OS_LXMF_HASH_LEN + SOLAR_OS_LXMF_SIGNATURE_LEN;
+/*
+ * The longest message taken, as it is carried. LXMF and Reticulum set no
+ * limit that matters here; this one is airtime, about three minutes of it
+ * at the slowest setting this runs on. What is kept of a message is what the
+ * messaging service holds, and a longer one is marked as cut.
+ */
+constexpr size_t kMessageMax = 64U * 1024U;
 
 struct Pending {
     bool active;
@@ -48,7 +56,6 @@ struct Pending {
     uint8_t attempts;
     int64_t next_attempt_us;
     RNS::Bytes destination;
-    char body[SOLAR_OS_LXMF_CONTENT_MAX + 1U];
 };
 
 class DeliveryAnnounces : public RNS::AnnounceHandler {
@@ -69,6 +76,10 @@ bool announce_requested = false;
 int64_t last_process_us = 0;
 solar_os_lxmf_status_t counters = {};
 Pending pending = {};
+/* The message being sent and the one being taken in, at the size the
+ * messaging service holds. Too large for the stack they are used from. */
+EXT_RAM_BSS_ATTR char pending_body[SOLAR_OS_MESSAGING_BODY_MAX];
+EXT_RAM_BSS_ATTR char inbound_body[SOLAR_OS_MESSAGING_BODY_MAX];
 
 RNS::Destination inbound({RNS::Type::NONE});
 RNS::HAnnounceHandler announce_handler;
@@ -158,7 +169,7 @@ void DeliveryAnnounces::received_announce(const RNS::Bytes &destination_hash,
 /* A message from its sender hash on: the recipient hash is implied. */
 void receive_message(const RNS::Bytes &data)
 {
-    if (data.size() <= kOverhead) {
+    if (data.size() <= kOverhead || data.size() > kMessageMax) {
         counters.rejected++;
         return;
     }
@@ -182,16 +193,19 @@ void receive_message(const RNS::Bytes &data)
         return;
     }
 
-    uint8_t signed_payload[SOLAR_OS_LXMF_PAYLOAD_MAX];
-    const size_t signed_len = solar_os_lxmf_signed_payload(
-        payload_bytes, &payload, signed_payload, sizeof(signed_payload));
-    if (signed_len == 0U) {
+    /* The signature covers the payload without any stamp, which differs from
+     * the payload as sent only in its first byte. */
+    RNS::Bytes signed_payload;
+    uint8_t *signed_bytes = signed_payload.writable(payload.signed_len);
+    if (signed_bytes == nullptr ||
+        solar_os_lxmf_signed_payload(payload_bytes, &payload, signed_bytes,
+                                     payload.signed_len) == 0U) {
         counters.rejected++;
         return;
     }
     RNS::Bytes hashed_part(inbound.hash());
     hashed_part.append(source_hash);
-    hashed_part.append(RNS::Bytes(signed_payload, signed_len));
+    hashed_part.append(signed_payload);
     RNS::Bytes signed_part(hashed_part);
     signed_part.append(RNS::Identity::full_hash(hashed_part));
     if (!source.validate(signature, signed_part)) {
@@ -221,12 +235,14 @@ void receive_message(const RNS::Bytes &data)
         (void)remember_peer(source_hash, nullptr, &contact_id, &endpoint_id);
     }
 
-    char body[SOLAR_OS_LXMF_TITLE_MAX + SOLAR_OS_LXMF_CONTENT_MAX + 2U];
+    char *body = inbound_body;
+    size_t used = 0U;
     if (payload.title[0] != '\0') {
-        snprintf(body, sizeof(body), "%s\n%s", payload.title, payload.content);
-    } else {
-        strlcpy(body, payload.content, sizeof(body));
+        used = (size_t)snprintf(body, sizeof(inbound_body), "%s\n", payload.title);
     }
+    bool truncated = payload.truncated;
+    solar_os_lxmf_copy_text(payload.content, payload.content_len, &body[used],
+                            sizeof(inbound_body) - used, &truncated);
 
     const solar_os_messaging_inbound_t message = {
         .provider = SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
@@ -243,7 +259,7 @@ void receive_message(const RNS::Bytes &data)
                           SOLAR_OS_SECURITY_TRANSPORT_SECURED,
         .sender = name,
         .body = body,
-        .truncated = payload.truncated,
+        .truncated = truncated,
     };
     bool inserted = false;
     const esp_err_t error =
@@ -270,7 +286,7 @@ void receive(const RNS::Bytes &data, const RNS::Packet &)
  * an LXMF client sends by default, so it has to be taken; the link proves
  * the packet, because the delivery destination proves everything.
  */
-void receive_over_link(const RNS::Bytes &data, const RNS::Packet &)
+void receive_whole(const RNS::Bytes &data)
 {
     if (data.size() <= SOLAR_OS_LXMF_HASH_LEN ||
         memcmp(data.data(), inbound.hash().data(), SOLAR_OS_LXMF_HASH_LEN) != 0) {
@@ -280,11 +296,59 @@ void receive_over_link(const RNS::Bytes &data, const RNS::Packet &)
     receive_message(data.mid(SOLAR_OS_LXMF_HASH_LEN));
 }
 
-/* A message larger than one link packet would come as a resource, which is
- * left refused: the link's default is to accept none. */
+void receive_over_link(const RNS::Bytes &data, const RNS::Packet &)
+{
+    receive_whole(data);
+}
+
+/*
+ * A message larger than one link packet comes as a resource, advertised
+ * first. One past the limit is told so, which is what stops its sender
+ * trying again: the link takes every advertisement whatever is said here,
+ * and dropping the transfer on this side alone looks to the sender like a
+ * transfer that stalled.
+ */
+void resource_advertised(const RNS::ResourceAdvertisement &advertisement)
+{
+    if (advertisement.get_data_size() <= kMessageMax) {
+        return;
+    }
+    counters.rejected++;
+    SOLAR_OS_LOGW(TAG, "refused a %u byte message",
+                  (unsigned)advertisement.get_data_size());
+    try {
+        RNS::Packet reject(advertisement.get_link(), advertisement.get_hash());
+        reject.context(RNS::Type::Packet::RESOURCE_RCL);
+        reject.send();
+    } catch (const std::exception &failure) {
+        SOLAR_OS_LOGW(TAG, "refusal not sent: %s", failure.what());
+    }
+}
+
+/* The refused one is taken up by the link all the same, and stopped here. */
+void resource_started(const RNS::Resource &resource)
+{
+    if (resource.total_size() > kMessageMax) {
+        RNS::Resource(resource).cancel();
+    }
+}
+
+/* Whole, it is the same bytes a link packet would have carried. */
+void resource_concluded(const RNS::Resource &resource)
+{
+    if (resource.status() != RNS::Type::Resource::COMPLETE) {
+        return;
+    }
+    receive_whole(resource.data());
+}
+
 void link_established(RNS::Link &link)
 {
     link.set_packet_callback(receive_over_link);
+    link.set_resource_strategy(RNS::Type::Link::ACCEPT_APP);
+    link.set_resource_callback(resource_advertised);
+    link.set_resource_started_callback(resource_started);
+    link.set_resource_concluded_callback(resource_concluded);
     counters.links++;
 }
 
@@ -328,7 +392,7 @@ bool transmit()
     uint8_t payload[SOLAR_OS_LXMF_PAYLOAD_MAX];
     const uint64_t timestamp_ms = now_ms();
     const size_t payload_len = solar_os_lxmf_pack_payload(
-        (double)timestamp_ms / 1000.0, "", pending.body, payload,
+        (double)timestamp_ms / 1000.0, "", pending_body, payload,
         sizeof(payload));
     if (payload_len == 0U ||
         payload_len + kOverhead > SOLAR_OS_LXMF_PACKET_MAX) {
@@ -419,18 +483,13 @@ void start_next()
     memset(&pending, 0, sizeof(pending));
     pending.active = true;
     pending.request_id = outbound.id;
-    strlcpy(pending.body, outbound.body, sizeof(pending.body));
+    strlcpy(pending_body, outbound.body, sizeof(pending_body));
 
     solar_os_messaging_conversation_t conversation = {};
     if (solar_os_messaging_conversation_get(outbound.conversation_id,
                                             &conversation) != ESP_OK ||
         !hex_to_hash(conversation.provider_key, pending.destination)) {
         fail(outbound.id, "Reticulum conversation has no destination");
-        return;
-    }
-    if (strnlen(outbound.body, sizeof(outbound.body)) >
-        SOLAR_OS_LXMF_CONTENT_MAX) {
-        fail(outbound.id, "Reticulum message exceeds 255 bytes");
         return;
     }
     (void)solar_os_messaging_outbox_update(
