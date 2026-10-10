@@ -68,6 +68,7 @@ ppp = true
 osc = true
 inbox = true
 places = true
+map = true
 contacts = true
 chat = true
 chat_gateway = true
