@@ -572,6 +572,9 @@ static const shell_command_t shell_builtin_commands[] = {
 #if SOLAR_OS_PACKAGE_APP_INBOX
     {"inbox", "read incoming messages", solar_os_shell_cmd_inbox},
 #endif
+#if SOLAR_OS_PACKAGE_SERVICE_PLACES
+    {"places", "keep points and paths", solar_os_shell_cmd_places},
+#endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
     {"contacts", "browse and manage contacts", solar_os_shell_cmd_contacts},
 #endif
@@ -1324,6 +1327,14 @@ static const char * const inbox_subcommands[] = {
 static const char * const inbox_list_values[] = {"all", "unread"};
 static const char * const inbox_notify_values[] = {"on", "off", "test"};
 #endif
+#if SOLAR_OS_PACKAGE_SERVICE_PLACES
+static const char * const places_subcommands[] = {
+    "status", "list", "add", "remove", "clear", "fix", "path", "help"
+};
+static const char * const places_path_subcommands[] = {
+    "add", "list", "remove", "clear"
+};
+#endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
 static const char * const contacts_subcommands[] = {
     "status",
@@ -1919,6 +1930,10 @@ static const char * const path_inbox_list[] = {"inbox", "list"};
 static const char * const path_inbox_read[] = {"inbox", "read"};
 static const char * const path_inbox_delete[] = {"inbox", "delete"};
 static const char * const path_inbox_notify[] = {"inbox", "notify"};
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_PLACES
+static const char * const path_places[] = {"places"};
+static const char * const path_places_path[] = {"places", "path"};
 #endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
 static const char * const path_contacts[] = {"contacts"};
@@ -3466,6 +3481,10 @@ static const shell_completion_rule_t shell_completion_rules[] = {
     SHELL_COMPLETION_INBOX_IDS(path_inbox_read),
     SHELL_COMPLETION_INBOX_IDS(path_inbox_delete),
     SHELL_COMPLETION_STATIC(path_inbox_notify, inbox_notify_values),
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_PLACES
+    SHELL_COMPLETION_STATIC(path_places, places_subcommands),
+    SHELL_COMPLETION_STATIC(path_places_path, places_path_subcommands),
 #endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
     SHELL_COMPLETION_STATIC(path_contacts, contacts_subcommands),

@@ -63,3 +63,4 @@ tests/host/native_inference_api_test
 tests/host/native_video_api_test
 tests/host/native_video_rtsp_api_test
 tests/host/tab5_keyboard_test
+tests/host/*_test
