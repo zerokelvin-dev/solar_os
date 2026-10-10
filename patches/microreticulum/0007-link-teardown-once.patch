@@ -1,0 +1,19 @@
+Tear a link down once
+
+Link::teardown() on a link already closed ran link_closed() a second time,
+so the closed callback fired twice and the teardown reason was overwritten.
+The Python reference returns at once for a closed link.
+
+
+--- a/microReticulum/Link.cpp
++++ b/microReticulum/Link.cpp
+@@ -793,6 +793,9 @@
+ */
+ void Link::teardown() {
+ 	assert(_object);
++	if (_object->_status == Type::Link::CLOSED) {
++		return;
++	}
+ 	if (_object->_status != Type::Link::PENDING && _object->_status != Type::Link::CLOSED) {
+ 		Packet(*this, _object->_link_id).context(Type::Packet::LINKCLOSE).send();
+ 		had_outbound();
