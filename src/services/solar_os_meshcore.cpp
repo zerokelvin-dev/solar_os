@@ -24,6 +24,9 @@ extern "C" {
 #include "solar_os_credentials.h"
 #include "solar_os_crypto.h"
 #include "solar_os_identity.h"
+#if SOLAR_OS_PACKAGE_SERVICE_PLACES
+#include "solar_os_places.h"
+#endif
 #include "solar_os_memory.h"
 #include "solar_os_messaging.h"
 #include "solar_os_meshcore_channel_key.h"
@@ -669,7 +672,33 @@ protected:
             &endpoint_id);
         if (last_error_ == ESP_OK) {
             adverts_received_++;
+            publish_map_point(contact);
         }
+    }
+
+    void publish_map_point(const ContactInfo &contact)
+    {
+#if SOLAR_OS_PACKAGE_SERVICE_PLACES
+        if (contact.gps_lat == 0 && contact.gps_lon == 0) {
+            return;
+        }
+        char key[SOLAR_OS_PLACES_KEY_MAX];
+        for (size_t i = 0; i < 6U; i++) {
+            snprintf(&key[i * 2U], 3U, "%02x", contact.id.pub_key[i]);
+        }
+        solar_os_places_publish_t point = {};
+        point.source = "meshcore";
+        point.key = key;
+        point.label = contact.name;
+        point.kind = SOLAR_OS_PLACES_KIND_NODE;
+        /* MeshCore adverts carry degrees scaled by 1e6. */
+        point.latitude_e7 = (int32_t)contact.gps_lat * 10;
+        point.longitude_e7 = (int32_t)contact.gps_lon * 10;
+        point.timestamp_ms = (uint64_t)contact.last_advert_timestamp * 1000ULL;
+        (void)solar_os_places_publish(&point, nullptr);
+#else
+        (void)contact;
+#endif
     }
 
     void onContactPathUpdated(const ContactInfo &contact) override
@@ -701,6 +730,9 @@ protected:
             sizeof(metadata),
             nullptr,
             nullptr);
+        /* A route that was refreshed carries the position that came with
+         * it, so the node moves on the map for the same packet. */
+        publish_map_point(contact);
     }
 
     ContactInfo *processAck(const uint8_t *data) override
@@ -1037,6 +1069,13 @@ private:
             }
             if (addContact(contact)) {
                 contacts_loaded_++;
+                /*
+                 * The position a node last adverted is on the card, so the
+                 * map can show it from the moment the contacts come back
+                 * rather than waiting out an advert interval that on LoRa
+                 * is measured in hours.
+                 */
+                publish_map_point(contact);
             }
         }
         solar_os_memory_free(endpoints);
