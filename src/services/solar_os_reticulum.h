@@ -60,6 +60,8 @@ typedef struct {
     uint32_t lora_tx_bytes;
     uint32_t lora_send_errors;
     uint32_t lora_crc_errors;
+    /* Times the radio was lost and given its settings again. */
+    uint32_t lora_recoveries;
     int16_t lora_rssi_dbm;
     int16_t lora_snr_db;
     size_t paths;
