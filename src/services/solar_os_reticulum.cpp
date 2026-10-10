@@ -670,6 +670,7 @@ esp_err_t solar_os_reticulum_get_status(solar_os_reticulum_status_t *status)
             status->lora_tx_bytes = static_cast<uint32_t>(lora_interface.txbytes());
             status->lora_send_errors = lora_impl->send_errors();
             status->lora_crc_errors = lora_impl->crc_errors();
+            status->lora_recoveries = lora_impl->recoveries();
             status->lora_rssi_dbm = lora_impl->last_rssi_dbm();
             status->lora_snr_db = lora_impl->last_snr_db();
         }
