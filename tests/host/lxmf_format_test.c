@@ -13,6 +13,13 @@ static const uint8_t reference[] = {
     0x80,
 };
 
+/* The content is borrowed, unterminated bytes. */
+static bool content_is(const solar_os_lxmf_payload_t *payload, const char *text)
+{
+    return payload->content_len == strlen(text) &&
+           memcmp(payload->content, text, payload->content_len) == 0;
+}
+
 static void test_pack(void)
 {
     uint8_t packed[SOLAR_OS_LXMF_PAYLOAD_MAX];
@@ -40,7 +47,7 @@ static void test_unpack(void)
     assert(solar_os_lxmf_unpack_payload(reference, sizeof(reference), &payload));
     assert(payload.timestamp_s > 1757999999.0 && payload.timestamp_s < 1758000001.0);
     assert(strcmp(payload.title, "hi") == 0);
-    assert(strcmp(payload.content, "there") == 0);
+    assert(content_is(&payload, "there"));
     assert(!payload.truncated);
     assert(payload.fields_len == 1U && payload.fields[0] == 0x80U);
     assert(payload.signed_len == sizeof(reference));
@@ -53,25 +60,27 @@ static void test_unpack(void)
     assert(solar_os_lxmf_unpack_payload(packed, length, &payload));
     assert(payload.timestamp_s == 1.5);
     assert(strcmp(payload.title, "title") == 0);
-    assert(strcmp(payload.content, "body") == 0);
+    assert(content_is(&payload, "body"));
 
     /* Peers that send str rather than bin, and an integer timestamp. */
     const uint8_t as_str[] = {0x94, 0x0A, 0xA2, 'h', 'i', 0xA3, 'y', 'o', 'u', 0x80};
     assert(solar_os_lxmf_unpack_payload(as_str, sizeof(as_str), &payload));
     assert(payload.timestamp_s == 10.0);
     assert(strcmp(payload.title, "hi") == 0);
-    assert(strcmp(payload.content, "you") == 0);
+    assert(content_is(&payload, "you"));
 
     /* A nil title is an empty title. */
     const uint8_t nil_title[] = {0x94, 0x00, 0xC0, 0xA1, 'x', 0x80};
     assert(solar_os_lxmf_unpack_payload(nil_title, sizeof(nil_title), &payload));
     assert(payload.title[0] == '\0');
-    assert(strcmp(payload.content, "x") == 0);
+    assert(content_is(&payload, "x"));
 
     /* Control characters are replaced so they cannot corrupt a terminal. */
     const uint8_t control[] = {0x94, 0x00, 0xA1, 'x', 0xA3, 'a', 0x07, 'b', 0x80};
     assert(solar_os_lxmf_unpack_payload(control, sizeof(control), &payload));
-    assert(strcmp(payload.content, "a b") == 0);
+    char shown[8];
+    solar_os_lxmf_copy_text(payload.content, payload.content_len, shown, sizeof(shown), NULL);
+    assert(strcmp(shown, "a b") == 0);
 
     /* Truncated and malformed payloads are rejected, never read past. */
     for (size_t length_limit = 0U; length_limit < sizeof(reference); length_limit++) {
@@ -82,19 +91,40 @@ static void test_unpack(void)
     const uint8_t short_array[] = {0x92, 0x00, 0xA1, 'x'};
     assert(!solar_os_lxmf_unpack_payload(short_array, sizeof(short_array), &payload));
 
-    /* Oversized content is truncated rather than overflowing. */
-    uint8_t long_content[SOLAR_OS_LXMF_CONTENT_MAX + 32U];
+    /* Content of any length is found where it lies rather than copied, and
+     * copied out it is cut to what it is given, never past it. */
+    static uint8_t long_content[70000U];
     memset(long_content, 'y', sizeof(long_content));
     long_content[0] = 0x94;
     long_content[1] = 0x00;
     long_content[2] = 0xA0;
     long_content[3] = 0xC5;
-    long_content[4] = 0x01;
-    long_content[5] = 0x00;
-    long_content[6U + 256U] = 0x80;
-    assert(solar_os_lxmf_unpack_payload(long_content, 6U + 256U + 1U, &payload));
-    assert(strlen(payload.content) == SOLAR_OS_LXMF_CONTENT_MAX);
-    assert(payload.truncated);
+    long_content[4] = 0x13;
+    long_content[5] = 0x88; /* 5000 bytes */
+    long_content[6U + 5000U] = 0x80;
+    assert(solar_os_lxmf_unpack_payload(long_content, 6U + 5000U + 1U, &payload));
+    assert(payload.content_len == 5000U && payload.content == &long_content[6]);
+    assert(!payload.truncated);
+    assert(payload.signed_len == 6U + 5000U + 1U);
+    char text[65];
+    bool cut = false;
+    solar_os_lxmf_copy_text(payload.content, payload.content_len, text, sizeof(text), &cut);
+    assert(strlen(text) == 64U && cut);
+    cut = false;
+    solar_os_lxmf_copy_text((const uint8_t *)"a\tb", 3U, text, sizeof(text), &cut);
+    assert(strcmp(text, "a b") == 0 && !cut);
+
+    /* A 32-bit length, which a message past 64 KiB of content needs. */
+    long_content[3] = 0xC6;
+    long_content[4] = 0x00;
+    long_content[5] = 0x01;
+    long_content[6] = 0x00;
+    long_content[7] = 0x10; /* 65552 bytes */
+    long_content[8U + 65552U] = 0x80;
+    assert(solar_os_lxmf_unpack_payload(long_content, 8U + 65552U + 1U, &payload));
+    assert(payload.content_len == 65552U);
+    /* One that claims more than there is fails. */
+    assert(!solar_os_lxmf_unpack_payload(long_content, 8U + 100U, &payload));
 }
 
 /*
@@ -118,7 +148,7 @@ static void test_stamp(void)
     assert(solar_os_lxmf_unpack_payload(stamped, sizeof(stamped), &payload));
     assert(payload.stamped);
     assert(strcmp(payload.title, "t") == 0);
-    assert(strcmp(payload.content, "c") == 0);
+    assert(content_is(&payload, "c"));
     assert(payload.fields_len == 6U);
     assert(payload.signed_len == sizeof(pre_stamp));
 
@@ -148,9 +178,10 @@ static void test_announce(void)
     uint8_t packed[SOLAR_OS_LXMF_ANNOUNCE_MAX];
     const size_t length =
         solar_os_lxmf_pack_announce("solaros", packed, sizeof(packed));
-    /* msgpack.packb([b"solaros", None]) */
-    const uint8_t expected[] = {0x92, 0xC4, 0x07, 's', 'o', 'l',
-                                'a',  'r',  'o',  's', 0xC0};
+    /* msgpack.packb([b"solaros", None, []]): the empty third element is
+     * what tells an LXMF sender not to compress a resource for us. */
+    const uint8_t expected[] = {0x93, 0xC4, 0x07, 's', 'o', 'l',
+                                'a',  'r',  'o',  's', 0xC0, 0x90};
     assert(length == sizeof(expected));
     assert(memcmp(packed, expected, length) == 0);
 

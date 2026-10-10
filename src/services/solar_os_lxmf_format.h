@@ -17,7 +17,6 @@ extern "C" {
 #define SOLAR_OS_LXMF_HASH_LEN 16U
 #define SOLAR_OS_LXMF_SIGNATURE_LEN 64U
 #define SOLAR_OS_LXMF_TITLE_MAX 32U
-#define SOLAR_OS_LXMF_CONTENT_MAX 255U
 #define SOLAR_OS_LXMF_NAME_MAX 32U
 #define SOLAR_OS_LXMF_ANNOUNCE_MAX 40U
 /* A single encrypted packet carries this much of a destination's payload. */
@@ -31,8 +30,13 @@ extern "C" {
 typedef struct {
     double timestamp_s;
     char title[SOLAR_OS_LXMF_TITLE_MAX + 1U];
-    char content[SOLAR_OS_LXMF_CONTENT_MAX + 1U];
+    /* Whether the title was longer than it is here. */
     bool truncated;
+    /* The content as it was sent, borrowed from the caller's buffer and not
+     * terminated: a message may be far longer than anything worth copying
+     * twice. solar_os_lxmf_copy_text() makes text of it. */
+    const uint8_t *content;
+    size_t content_len;
     bool stamped;
     /* The fields map, borrowed from the caller's buffer. */
     const uint8_t *fields;
@@ -60,6 +64,16 @@ size_t solar_os_lxmf_signed_payload(const uint8_t *data,
                                     const solar_os_lxmf_payload_t *payload,
                                     uint8_t *out,
                                     size_t out_len);
+
+/*
+ * Copies bytes out as text that is safe to show, terminated, and says
+ * whether they did not all fit.
+ */
+void solar_os_lxmf_copy_text(const uint8_t *bytes,
+                             size_t len,
+                             char *text,
+                             size_t text_len,
+                             bool *truncated);
 
 size_t solar_os_lxmf_pack_announce(const char *display_name,
                                    uint8_t *out,
