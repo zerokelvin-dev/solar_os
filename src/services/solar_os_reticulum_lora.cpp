@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "esp_random.h"
+#include "esp_timer.h"
 
 namespace solar_os {
 
@@ -13,6 +14,9 @@ namespace {
 
 constexpr uint32_t kSendTimeoutFloorMs = 1500U;
 constexpr int kReceiveBudget = 4;
+/* How often a lost radio is tried again: a configure of one that is not
+ * there blocks for about a second. */
+constexpr int64_t kRecoverIntervalUs = 5000000LL;
 
 }  // namespace
 
@@ -39,33 +43,73 @@ ReticulumLoraInterface::ReticulumLoraInterface(
 
 bool ReticulumLoraInterface::start()
 {
-    const esp_err_t error =
-        solar_os_radio_handle_set_state(&handle_, SOLAR_OS_RADIO_STATE_RX);
-    _online = error == ESP_OK;
+    running_ = true;
+    lost_ = false;
+    retry_at_us_ = 0;
+    _online = listen();
+    lost_ = !_online;
     return _online;
 }
 
 void ReticulumLoraInterface::stop()
 {
+    running_ = false;
     _online = false;
+}
+
+/*
+ * Puts the radio to listening. A driver that has lost track of its radio
+ * refuses until it is given settings again, so a refusal is answered with
+ * the ones this interface runs on, and no more often than every few seconds:
+ * a radio that is gone is not asked on every pass.
+ */
+bool ReticulumLoraInterface::listen()
+{
+    if (!lost_ &&
+        solar_os_radio_handle_set_state(&handle_, SOLAR_OS_RADIO_STATE_RX) == ESP_OK) {
+        return true;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (now < retry_at_us_) {
+        return false;
+    }
+    retry_at_us_ = now + kRecoverIntervalUs;
+    if (solar_os_radio_handle_configure(&handle_, &config_) != ESP_OK ||
+        solar_os_radio_handle_set_state(&handle_, SOLAR_OS_RADIO_STATE_RX) != ESP_OK) {
+        return false;
+    }
+    recoveries_++;
+    return true;
 }
 
 void ReticulumLoraInterface::back_to_receive()
 {
-    _online = solar_os_radio_handle_set_state(&handle_, SOLAR_OS_RADIO_STATE_RX) ==
-              ESP_OK;
+    _online = listen();
+    lost_ = !_online;
 }
 
 void ReticulumLoraInterface::loop()
 {
-    if (!_online) {
+    if (!running_) {
         return;
+    }
+    if (lost_) {
+        back_to_receive();
+        if (lost_) {
+            return;
+        }
     }
     for (int budget = 0; budget < kReceiveBudget; budget++) {
         solar_os_radio_packet_t packet{};
         const esp_err_t error =
             solar_os_radio_handle_receive(&handle_, &packet, 0);
+        if (error == ESP_ERR_TIMEOUT) {
+            return; /* nothing heard */
+        }
         if (error != ESP_OK) {
+            /* Not an empty channel: the radio is no longer listening. */
+            lost_ = true;
+            _online = false;
             return;
         }
         if (!packet.crc_ok || packet.len == 0U) {

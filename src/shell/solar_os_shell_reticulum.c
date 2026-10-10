@@ -89,10 +89,14 @@ static void reticulum_status(solar_os_shell_io_t *io)
                                      (int)status.lora_rssi_dbm,
                                      (int)status.lora_snr_db);
         }
-        if (status.lora_send_errors != 0U || status.lora_crc_errors != 0U) {
+        if (status.lora_send_errors != 0U || status.lora_crc_errors != 0U ||
+            status.lora_recoveries != 0U) {
             solar_os_shell_io_printf(
-                io, "LoRa errors: send %" PRIu32 ", crc %" PRIu32 "\n",
-                status.lora_send_errors, status.lora_crc_errors);
+                io,
+                "LoRa errors: send %" PRIu32 ", crc %" PRIu32
+                ", radio recovered %" PRIu32 "\n",
+                status.lora_send_errors, status.lora_crc_errors,
+                status.lora_recoveries);
         }
     }
     solar_os_shell_io_printf(
