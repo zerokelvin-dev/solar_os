@@ -547,6 +547,11 @@ esp_err_t solar_os_reticulum_stop(void)
     lora_interface.clear();
     lora_impl = nullptr;
     radio_release_locked();
+    /* Transport keeps a destination until it is told otherwise, and refuses
+     * the same one twice, so the job could not be started again. */
+    if (destination) {
+        RNS::Transport::deregister_destination(destination);
+    }
     destination = RNS::Destination({RNS::Type::NONE});
     SOLAR_OS_LOGI(TAG, "stopped");
     return ESP_OK;
