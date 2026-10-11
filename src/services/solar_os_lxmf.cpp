@@ -727,6 +727,9 @@ void detach()
     drop_link();
     try {
         RNS::Transport::deregister_announce_handler(announce_handler);
+        if (inbound) {
+            RNS::Transport::deregister_destination(inbound);
+        }
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "detach failed: %s", failure.what());
     }
