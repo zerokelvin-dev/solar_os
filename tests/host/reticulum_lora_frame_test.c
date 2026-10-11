@@ -141,12 +141,31 @@ static void test_the_edges_are_refused(void)
                                          frames[0].len, small, sizeof(small)) == 0U);
 }
 
+/* An RNode divides in whole numbers, so a symbol a fraction over 16 ms
+ * does not turn low-data-rate optimize on where the kilohertz divide evenly,
+ * and a bandwidth with a fraction of a kilohertz is rounded down first. */
+static void test_low_data_rate_is_reckoned_as_an_rnode_reckons_it(void)
+{
+    assert(!solar_os_rnode_low_data_rate(8U, 125000U));   /*  2.0 ms */
+    assert(!solar_os_rnode_low_data_rate(10U, 125000U));  /*  8.2 ms */
+    assert(!solar_os_rnode_low_data_rate(11U, 125000U));  /* 16.4 ms: 2048 / 125 is 16 */
+    assert(solar_os_rnode_low_data_rate(12U, 125000U));   /* 32.8 ms */
+    assert(!solar_os_rnode_low_data_rate(12U, 250000U));  /* 16.4 ms: 4096 / 250 is 16 */
+    assert(!solar_os_rnode_low_data_rate(12U, 500000U));  /*  8.2 ms */
+    assert(!solar_os_rnode_low_data_rate(10U, 62500U));   /* 16.4 ms: 1024 / 62 is 16 */
+    assert(solar_os_rnode_low_data_rate(11U, 62500U));    /* 32.8 ms */
+    assert(!solar_os_rnode_low_data_rate(9U, 31250U));    /* 16.4 ms: 512 / 31 is 16 */
+    assert(!solar_os_rnode_low_data_rate(8U, 0U));
+    assert(!solar_os_rnode_low_data_rate(8U, 500U));
+}
+
 int main(void)
 {
     test_a_short_packet_is_one_frame();
     test_a_long_packet_splits_and_reassembles();
     test_a_lost_half_never_pairs_with_the_wrong_packet();
     test_the_edges_are_refused();
+    test_low_data_rate_is_reckoned_as_an_rnode_reckons_it();
     printf("reticulum_lora_frame_test ok\n");
     return 0;
 }

@@ -57,6 +57,12 @@ factor and coding rate, hears this node's announces and this node hears
 its. `reticulum status` shows the radio, whether it is online, frames and
 bytes each way, and the RSSI and SNR of the last frame heard.
 
+LoRa's low-data-rate optimize must be set alike at both ends, and the
+interface sets it as RNode firmware does rather than as the radio driver
+would by itself. The two differ where a symbol lasts a fraction over 16 ms,
+at SF11 on 125 kHz and SF12 on 250 kHz among others: an RNode leaves it off
+there, and so does this.
+
 ## Identity and storage
 
 The first start generates an identity from the SolarOS RNG and stores its

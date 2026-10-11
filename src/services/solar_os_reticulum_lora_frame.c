@@ -102,3 +102,13 @@ size_t solar_os_rnode_assembler_feed(solar_os_rnode_assembler_t *assembler,
     (void)assembler_take(assembler, payload, payload_len);
     return 0U;
 }
+
+bool solar_os_rnode_low_data_rate(uint8_t spreading_factor,
+                                  uint32_t bandwidth_hz)
+{
+    const uint32_t bandwidth_khz = bandwidth_hz / 1000U;
+    if (bandwidth_khz == 0U || spreading_factor > 12U) {
+        return false;
+    }
+    return ((uint32_t)1U << spreading_factor) / bandwidth_khz > 16U;
+}
