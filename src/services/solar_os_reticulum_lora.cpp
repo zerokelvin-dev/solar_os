@@ -25,6 +25,11 @@ ReticulumLoraInterface::ReticulumLoraInterface(
     const solar_os_radio_config_t &config)
     : RNS::InterfaceImpl("LoRaInterface"), handle_(handle), config_(config)
 {
+    config_.low_data_rate =
+        solar_os_rnode_low_data_rate(config.spreading_factor,
+                                     config.rx_bandwidth_hz)
+            ? SOLAR_OS_RADIO_LOW_DATA_RATE_ON
+            : SOLAR_OS_RADIO_LOW_DATA_RATE_OFF;
     _IN = true;
     _OUT = true;
     _HW_MTU = RNS::Type::Reticulum::MTU;
@@ -44,8 +49,11 @@ ReticulumLoraInterface::ReticulumLoraInterface(
 bool ReticulumLoraInterface::start()
 {
     running_ = true;
-    lost_ = false;
     retry_at_us_ = 0;
+    /* The radio is given this interface's settings before it listens: they
+     * are the profile's, with low-data-rate optimize set as an RNode sets
+     * it. A radio that refuses them is one to bring back. */
+    lost_ = solar_os_radio_handle_configure(&handle_, &config_) != ESP_OK;
     _online = listen();
     lost_ = !_online;
     return _online;
@@ -139,7 +147,8 @@ uint32_t ReticulumLoraInterface::airtime_ms(size_t length) const
     const int sf = config_.spreading_factor;
     const double symbol_ms =
         ldexp(1000.0, sf) / (double)config_.rx_bandwidth_hz;
-    const int low_data_rate = symbol_ms > 16.0 ? 1 : 0;
+    const int low_data_rate =
+        config_.low_data_rate == SOLAR_OS_RADIO_LOW_DATA_RATE_ON ? 1 : 0;
     const int crc = config_.crc_enabled ? 1 : 0;
     const int numerator = 8 * (int)length - 4 * sf + 28 + 16 * crc;
     const int denominator = 4 * (sf - 2 * low_data_rate);
