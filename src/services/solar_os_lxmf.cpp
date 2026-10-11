@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <exception>
+#include <vector>
 
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
@@ -831,6 +832,21 @@ esp_err_t solar_os_lxmf_open(const char *destination_hex,
     }
     char peer_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
     hash_hex(hash, peer_hex, sizeof(peer_hex));
+    /* A conversation that exists is returned as it is: an upsert would put
+     * the bare hash back over the name and security it has earned since. */
+    std::vector<solar_os_messaging_conversation_t> known(
+        SOLAR_OS_MESSAGING_CONVERSATION_CAPACITY);
+    const size_t count =
+        solar_os_messaging_conversation_snapshot(known.data(), known.size());
+    for (size_t i = 0; i < count; i++) {
+        if (known[i].provider == SOLAR_OS_MESSAGING_PROVIDER_RETICULUM &&
+            strcmp(known[i].provider_key, peer_hex) == 0) {
+            if (conversation_id != nullptr) {
+                *conversation_id = known[i].id;
+            }
+            return ESP_OK;
+        }
+    }
     const solar_os_messaging_conversation_upsert_t request = {
         .provider = SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
         .provider_key = peer_hex,
