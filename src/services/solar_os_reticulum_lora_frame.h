@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -42,6 +43,15 @@ typedef struct {
     size_t len;
     uint8_t sequence;
 } solar_os_rnode_assembler_t;
+
+/*
+ * Whether an RNode turns low-data-rate optimize on. Its firmware divides in
+ * whole numbers, symbols by whole kilohertz, so it leaves it off at a few
+ * settings where the symbol is a fraction over 16 ms: SF11 at 125 kHz and
+ * SF12 at 250 kHz among them. A radio that is to hear an RNode does the same.
+ */
+bool solar_os_rnode_low_data_rate(uint8_t spreading_factor,
+                                  uint32_t bandwidth_hz);
 
 void solar_os_rnode_assembler_init(solar_os_rnode_assembler_t *assembler);
 
