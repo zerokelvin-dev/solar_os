@@ -217,7 +217,7 @@ static bool reticulum_lxmf(solar_os_shell_io_t *io, int argc, char **argv)
         } else if (error != ESP_OK) {
             reticulum_error(io, "lxmf announce", error);
         } else {
-            solar_os_shell_io_writeln(io, "LXMF announce queued");
+            solar_os_shell_io_writeln(io, "LXMF announce sent");
         }
         return true;
     }
