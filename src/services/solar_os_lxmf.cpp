@@ -41,6 +41,8 @@ constexpr int64_t kProcessingIntervalUs = 4LL * 1000000LL;
 constexpr int64_t kDeliveryRetryWaitUs = 10LL * 1000000LL;
 constexpr int64_t kPathRequestWaitUs = 7LL * 1000000LL;
 constexpr int16_t kProofTimeoutSeconds = 30;
+/* Longer than the slowest LoRa profile takes to put an announce on the air. */
+constexpr int64_t kAnnounceWaitUs = 30LL * 1000000LL;
 /* A link that has carried no message for this long is closed, as the LXMF
  * router closes its own: an open link costs keepalives on a slow channel. */
 constexpr double kLinkIdleSeconds = 600.0;
@@ -86,6 +88,10 @@ SemaphoreHandle_t lock = nullptr;
 StaticSemaphore_t lock_storage;
 bool attached = false;
 bool announce_requested = false;
+/* How many announces the worker has made, and how the last one went, for a
+ * caller that asked for one and is waiting to say whether it was sent. */
+uint32_t announces_done = 0;
+esp_err_t announce_result = ESP_OK;
 int64_t last_process_us = 0;
 solar_os_lxmf_status_t counters = {};
 Pending pending = {};
@@ -739,6 +745,12 @@ void detach()
         SOLAR_OS_MESSAGING_PROVIDER_RETICULUM, false, false, ESP_OK, nullptr);
 }
 
+void request_announce()
+{
+    Guard guard;
+    announce_requested = true;
+}
+
 void tick()
 {
     if (!attached) {
@@ -757,10 +769,19 @@ void tick()
             uint8_t app_data[SOLAR_OS_LXMF_ANNOUNCE_MAX];
             const size_t length = solar_os_lxmf_pack_announce(
                 name, app_data, sizeof(app_data));
-            if (length > 0U) {
-                inbound.announce(RNS::Bytes(app_data, length));
-                counters.announces_sent++;
+            esp_err_t result = ESP_FAIL;
+            try {
+                if (length > 0U) {
+                    inbound.announce(RNS::Bytes(app_data, length));
+                    counters.announces_sent++;
+                    result = ESP_OK;
+                }
+            } catch (const std::exception &failure) {
+                SOLAR_OS_LOGE(TAG, "announce failed: %s", failure.what());
             }
+            Guard guard;
+            announce_result = result;
+            announces_done++;
         }
         /* The outbound job runs on its own interval, as the LXMF router's
          * does, rather than on every pass of the Reticulum loop. */
@@ -811,12 +832,29 @@ esp_err_t solar_os_lxmf_get_status(solar_os_lxmf_status_t *status)
 esp_err_t solar_os_lxmf_announce(void)
 {
     ensure_lock();
-    Guard guard;
-    if (!attached) {
-        return ESP_ERR_INVALID_STATE;
+    uint32_t before = 0;
+    {
+        Guard guard;
+        if (!attached) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        before = announces_done;
+        announce_requested = true;
     }
-    announce_requested = true;
-    return ESP_OK;
+    /* The worker makes the announce and the radio takes its time over it, so
+     * this waits to answer whether it went, as the node's own announce does. */
+    const int64_t deadline = esp_timer_get_time() + kAnnounceWaitUs;
+    while (esp_timer_get_time() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        Guard guard;
+        if (!attached) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (announces_done != before) {
+            return announce_result;
+        }
+    }
+    return ESP_ERR_TIMEOUT;
 }
 
 esp_err_t solar_os_lxmf_open(const char *destination_hex,
