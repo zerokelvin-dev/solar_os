@@ -27,6 +27,7 @@ typedef enum {
     SOLAR_OS_MESSAGING_PROVIDER_GATEWAY = 1,
     SOLAR_OS_MESSAGING_PROVIDER_MESHCORE = 2,
     SOLAR_OS_MESSAGING_PROVIDER_LINK = 3,
+    SOLAR_OS_MESSAGING_PROVIDER_RETICULUM = 4,
 } solar_os_messaging_provider_id_t;
 
 typedef enum {
