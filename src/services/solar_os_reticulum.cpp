@@ -572,7 +572,7 @@ void solar_os_reticulum_loop_once(void)
         /* An announce before an interface is up has nowhere to go. */
         const bool online = any_interface_online();
         if (online && !interface_was_online) {
-            (void)solar_os_lxmf_announce();
+            solar_os::lxmf::request_announce();
         }
         interface_was_online = online;
         solar_os::lxmf::tick();
