@@ -47,6 +47,8 @@
 #define STC8H_KEY_DELETE_LONG 0x89U
 
 #define STC8H_COMPOSE_TIMEOUT_US 2000000LL
+/* How long the compose layer waits for another control shortcut after one. */
+#define STC8H_SHORTCUT_RUN_US 1200000LL
 
 #define STC8H_POLL_MS 15U
 /* Must match the display backlight's frequency: all PWM pins share one LEDC timer. */
@@ -66,6 +68,7 @@ typedef struct {
     solar_os_input_source_t input_source;
     TaskHandle_t worker_task;
     bool compose_armed;
+    bool shortcut_run;
     int64_t compose_deadline_us;
     uint32_t keys;
     uint32_t unsupported;
@@ -240,6 +243,27 @@ static bool stc8h_compose(uint8_t key, uint8_t *composed)
     }
 }
 
+/* The keypad has no control key, so the compose layer sends the control
+ * character for the letters of the common editing shortcuts. */
+static bool stc8h_shortcut(uint8_t key, uint8_t *composed)
+{
+    switch (key) {
+    case 'a':
+    case 'c':
+    case 'f':
+    case 'o':
+    case 's':
+    case 'v':
+    case 'x':
+    case 'y':
+    case 'z':
+        *composed = (uint8_t)(key & 0x1fU);
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void process_pending_key(solar_os_stc8h_device_t *device,
                                 bool *bus_error_reported)
 {
@@ -273,6 +297,7 @@ static void process_pending_key(solar_os_stc8h_device_t *device,
         device->compose_armed = !device->compose_armed ||
             now_us >= device->compose_deadline_us;
         device->compose_deadline_us = now_us + STC8H_COMPOSE_TIMEOUT_US;
+        device->shortcut_run = false;
         return;
     }
     uint8_t key = 0U;
@@ -281,7 +306,18 @@ static void process_pending_key(solar_os_stc8h_device_t *device,
         return;
     }
     if (device->compose_armed) {
+        uint8_t shortcut = 0U;
         if (esp_timer_get_time() >= device->compose_deadline_us) {
+            device->compose_armed = false;
+        } else if (stc8h_shortcut(key, &shortcut)) {
+            /* The keypad does not report a held Message key, so a shortcut
+             * keeps the layer armed briefly for the next shortcut only:
+             * select all, copy, and paste then take one Message press. */
+            key = shortcut;
+            device->shortcut_run = true;
+            device->compose_deadline_us =
+                esp_timer_get_time() + STC8H_SHORTCUT_RUN_US;
+        } else if (device->shortcut_run) {
             device->compose_armed = false;
         } else if (key == SOLAR_OS_KEY_UP || key == SOLAR_OS_KEY_DOWN ||
                    key == SOLAR_OS_KEY_RIGHT || key == (uint8_t)'\b') {
