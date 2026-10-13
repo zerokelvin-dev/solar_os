@@ -34,7 +34,8 @@
 #define STC8H_LONG_PRESS_DEFAULT_MS 700U
 
 /* Keycap codes measured on ThinkNode M9 revision 1.0 hardware. The alt and
- * triangle keys intermittently emit 0x88 and 0x90; both are ignored. */
+ * triangle keys intermittently emit 0x88 and 0x90; both are ignored. A held
+ * backspace repeats 0x08 and never reports DELETE_LONG there. */
 #define STC8H_KEY_MESSAGES 0x81U
 #define STC8H_KEY_HOME 0x82U
 #define STC8H_KEY_MESSAGE 0x83U
@@ -283,16 +284,20 @@ static void process_pending_key(solar_os_stc8h_device_t *device,
         if (esp_timer_get_time() >= device->compose_deadline_us) {
             device->compose_armed = false;
         } else if (key == SOLAR_OS_KEY_UP || key == SOLAR_OS_KEY_DOWN ||
-                   key == SOLAR_OS_KEY_RIGHT) {
-            /* Composed up and down page through the scrollback and
-             * composed right sends tab. The layer stays armed so repeated
-             * presses keep working. */
+                   key == SOLAR_OS_KEY_RIGHT || key == (uint8_t)'\b') {
+            /* Composed up and down page through the scrollback, composed
+             * right sends tab, and composed backspace sends delete. The
+             * layer stays armed so repeated presses, and a held backspace,
+             * keep working. */
             switch (key) {
             case SOLAR_OS_KEY_UP:
                 key = SOLAR_OS_KEY_PAGE_UP;
                 break;
             case SOLAR_OS_KEY_DOWN:
                 key = SOLAR_OS_KEY_PAGE_DOWN;
+                break;
+            case '\b':
+                key = SOLAR_OS_KEY_DELETE;
                 break;
             default:
                 key = (uint8_t)'\t';
