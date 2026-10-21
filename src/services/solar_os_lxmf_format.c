@@ -448,3 +448,31 @@ bool solar_os_lxmf_parse_announce(const uint8_t *data,
     name[copied] = '\0';
     return copied > 0U;
 }
+
+bool solar_os_lxmf_normalize_hash(const char *text, char *out, size_t out_len)
+{
+    if (text == NULL || out == NULL || out_len < 2U * SOLAR_OS_LXMF_HASH_LEN + 1U) {
+        return false;
+    }
+    size_t length = strlen(text);
+    if (length == 2U * SOLAR_OS_LXMF_HASH_LEN + 2U && text[0] == '<' &&
+        text[length - 1U] == '>') {
+        text++;
+        length -= 2U;
+    }
+    if (length != 2U * SOLAR_OS_LXMF_HASH_LEN) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; index++) {
+        char digit = text[index];
+        if (digit >= 'A' && digit <= 'F') {
+            digit = (char)(digit - 'A' + 'a');
+        }
+        if (!((digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f'))) {
+            return false;
+        }
+        out[index] = digit;
+    }
+    out[length] = '\0';
+    return true;
+}

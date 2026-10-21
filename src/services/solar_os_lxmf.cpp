@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <exception>
+#include <new>
 #include <vector>
 
 #include "esp_attr.h"
@@ -10,12 +11,13 @@
 #include "freertos/semphr.h"
 
 #include "solar_os_lxmf_internal.h"
-#include "solar_os_reticulum.h"
 
 extern "C" {
 #include "solar_os_contacts.h"
+#include "solar_os_credentials.h"
 #include "solar_os_identity.h"
 #include "solar_os_log.h"
+#include "solar_os_memory.h"
 #include "solar_os_messaging.h"
 #include "solar_os_time.h"
 }
@@ -43,6 +45,8 @@ constexpr int64_t kPathRequestWaitUs = 7LL * 1000000LL;
 constexpr int16_t kProofTimeoutSeconds = 30;
 /* Longer than the slowest LoRa profile takes to put an announce on the air. */
 constexpr int64_t kAnnounceWaitUs = 30LL * 1000000LL;
+/* How long removal waits for the worker to withdraw a destination. */
+constexpr int64_t kReleaseWaitUs = 5LL * 1000000LL;
 /* A link that has carried no message for this long is closed, as the LXMF
  * router closes its own: an open link costs keepalives on a slow channel. */
 constexpr double kLinkIdleSeconds = 600.0;
@@ -55,6 +59,8 @@ constexpr size_t kOverhead =
  * messaging service holds, and a longer one is marked as cut.
  */
 constexpr size_t kMessageMax = 64U * 1024U;
+constexpr const char *kIdentityLabel = "identity";
+constexpr size_t kPrivateKeySize = 64U;
 
 struct Pending {
     bool active;
@@ -73,6 +79,38 @@ struct Pending {
     RNS::Bytes destination;
 };
 
+/*
+ * One LXMF instance: an identity of its own, its delivery destination, and
+ * the one message it is sending. Slots are allocated once and never freed,
+ * so a callback or receipt that outlives an instance finds an empty slot or
+ * a different ID, never freed memory.
+ */
+struct Instance {
+    /* Guarded by lock. */
+    bool in_use;
+    bool removing;
+    solar_os_messaging_provider_id_t id;
+    solar_os_lxmf_config_t config;
+    bool announce_requested;
+    uint32_t announces_done;
+    esp_err_t announce_result;
+    bool listening;
+    char destination_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
+    solar_os_lxmf_status_t counters;
+    /* Worker thread only. */
+    RNS::Identity identity{RNS::Type::NONE};
+    RNS::Destination inbound{RNS::Type::NONE};
+    Pending pending;
+    /* The message being sent, at the size the messaging service holds. */
+    char *pending_body;
+    /* The one link this sends on, and whose it is. Kept after a message so
+     * the next to the same peer does not pay for another. */
+    RNS::Link direct{RNS::Type::NONE};
+    RNS::Bytes direct_peer;
+    RNS::Bytes sending_resource;
+    int64_t last_process_us;
+};
+
 class DeliveryAnnounces : public RNS::AnnounceHandler {
 public:
     DeliveryAnnounces()
@@ -86,26 +124,16 @@ public:
 
 SemaphoreHandle_t lock = nullptr;
 StaticSemaphore_t lock_storage;
-bool attached = false;
-bool announce_requested = false;
-/* How many announces the worker has made, and how the last one went, for a
- * caller that asked for one and is waiting to say whether it was sent. */
-uint32_t announces_done = 0;
-esp_err_t announce_result = ESP_OK;
-int64_t last_process_us = 0;
-solar_os_lxmf_status_t counters = {};
-Pending pending = {};
-/* The message being sent and the one being taken in, at the size the
- * messaging service holds. Too large for the stack they are used from. */
-EXT_RAM_BSS_ATTR char pending_body[SOLAR_OS_MESSAGING_BODY_MAX];
-EXT_RAM_BSS_ATTR char inbound_body[SOLAR_OS_MESSAGING_BODY_MAX];
-
-RNS::Destination inbound({RNS::Type::NONE});
-/* The one link this sends on, and whose it is. Kept after a message so the
- * next to the same peer does not pay for another. */
-RNS::Link direct({RNS::Type::NONE});
-RNS::Bytes direct_peer;
+/* Serialises profile edits, which write files, without holding lock. */
+SemaphoreHandle_t edit_lock = nullptr;
+StaticSemaphore_t edit_lock_storage;
+bool class_registered = false;
+Instance *slots = nullptr;
+/* The Reticulum job is running; each instance listens while it is enabled. */
+bool job_attached = false;
 RNS::HAnnounceHandler announce_handler;
+/* The message being taken in. Receiving is one at a time on the worker. */
+EXT_RAM_BSS_ATTR char inbound_body[SOLAR_OS_MESSAGING_BODY_MAX];
 
 class Guard {
 public:
@@ -115,15 +143,76 @@ public:
     Guard &operator=(const Guard &) = delete;
 };
 
-void ensure_lock()
+class EditGuard {
+public:
+    EditGuard() { xSemaphoreTake(edit_lock, portMAX_DELAY); }
+    ~EditGuard() { xSemaphoreGive(edit_lock); }
+    EditGuard(const EditGuard &) = delete;
+    EditGuard &operator=(const EditGuard &) = delete;
+};
+
+esp_err_t ensure_slots()
 {
     if (lock == nullptr) {
         lock = xSemaphoreCreateMutexStatic(&lock_storage);
+        edit_lock = xSemaphoreCreateMutexStatic(&edit_lock_storage);
     }
+    if (slots != nullptr) {
+        return ESP_OK;
+    }
+    void *memory = solar_os_memory_calloc(SOLAR_OS_LXMF_INSTANCE_MAX,
+                                          sizeof(Instance),
+                                          SOLAR_OS_MEMORY_EXTERNAL_REQUIRED,
+                                          "lxmf.instances");
+    char *bodies = static_cast<char *>(solar_os_memory_calloc(
+        SOLAR_OS_LXMF_INSTANCE_MAX, SOLAR_OS_MESSAGING_BODY_MAX,
+        SOLAR_OS_MEMORY_EXTERNAL_REQUIRED, "lxmf.pending"));
+    if (memory == nullptr || bodies == nullptr) {
+        solar_os_memory_free(memory);
+        solar_os_memory_free(bodies);
+        return ESP_ERR_NO_MEM;
+    }
+    Instance *made = static_cast<Instance *>(memory);
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        new (&made[i]) Instance();
+        made[i].pending_body = &bodies[i * SOLAR_OS_MESSAGING_BODY_MAX];
+    }
+    slots = made;
+    return ESP_OK;
 }
 
-void display_name(char *out, size_t out_len)
+/* Callers hold lock. */
+Instance *find_locked(solar_os_messaging_provider_id_t id)
 {
+    for (size_t i = 0; slots != nullptr && i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        if (slots[i].in_use && slots[i].id == id) {
+            return &slots[i];
+        }
+    }
+    return nullptr;
+}
+
+/* Worker thread only: the instance whose delivery destination this is. */
+Instance *find_by_destination(const RNS::Bytes &hash)
+{
+    for (size_t i = 0; slots != nullptr && i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        Instance &in = slots[i];
+        if (in.in_use && !in.removing && in.inbound && in.inbound.hash() == hash) {
+            return &in;
+        }
+    }
+    return nullptr;
+}
+
+void display_name(const Instance &in, char *out, size_t out_len)
+{
+    {
+        Guard guard;
+        if (in.config.display_name[0] != '\0') {
+            strlcpy(out, in.config.display_name, out_len);
+            return;
+        }
+    }
     solar_os_identity_get_hostname(out, out_len);
     if (out[0] == '\0') {
         strlcpy(out, "SolarOS", out_len);
@@ -154,8 +243,20 @@ uint64_t now_ms()
     return 0U;
 }
 
+bool is_group(const Instance &in, const char *peer_hex)
+{
+    Guard guard;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_GROUP_CAPACITY; i++) {
+        if (strcmp(in.config.groups[i], peer_hex) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Records the peer so the chat and contacts apps can address it. */
-esp_err_t remember_peer(const RNS::Bytes &destination_hash,
+esp_err_t remember_peer(solar_os_messaging_provider_id_t id,
+                        const RNS::Bytes &destination_hash,
                         const char *name,
                         solar_os_contact_id_t *contact_id,
                         solar_os_endpoint_id_t *endpoint_id)
@@ -163,7 +264,7 @@ esp_err_t remember_peer(const RNS::Bytes &destination_hash,
     char fallback[SOLAR_OS_LXMF_HASH_HEX_LEN];
     hash_hex(destination_hash, fallback, sizeof(fallback));
     return solar_os_contacts_upsert_discovered(
-        SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
+        id,
         destination_hash.data(),
         destination_hash.size(),
         (name != nullptr && name[0] != '\0') ? name : fallback,
@@ -175,6 +276,7 @@ esp_err_t remember_peer(const RNS::Bytes &destination_hash,
         endpoint_id);
 }
 
+/* Every listening instance hears the same network, so each learns the peer. */
 void DeliveryAnnounces::received_announce(const RNS::Bytes &destination_hash,
                                           const RNS::Identity &,
                                           const RNS::Bytes &app_data)
@@ -184,16 +286,31 @@ void DeliveryAnnounces::received_announce(const RNS::Bytes &destination_hash,
             app_data.data(), app_data.size(), name, sizeof(name))) {
         name[0] = '\0';
     }
-    if (remember_peer(destination_hash, name, nullptr, nullptr) == ESP_OK) {
-        counters.peers++;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        Instance &in = slots[i];
+        if (!in.in_use || in.removing || !in.inbound ||
+            in.inbound.hash() == destination_hash) {
+            continue;
+        }
+        if (remember_peer(in.id, destination_hash, name, nullptr, nullptr) ==
+            ESP_OK) {
+            Guard guard;
+            in.counters.peers++;
+        }
     }
 }
 
+void count_rejected(Instance &in)
+{
+    Guard guard;
+    in.counters.rejected++;
+}
+
 /* A message from its sender hash on: the recipient hash is implied. */
-void receive_message(const RNS::Bytes &data)
+void receive_message(Instance &in, const RNS::Bytes &data)
 {
     if (data.size() <= kOverhead || data.size() > kMessageMax) {
-        counters.rejected++;
+        count_rejected(in);
         return;
     }
     const RNS::Bytes source_hash = data.mid(0U, SOLAR_OS_LXMF_HASH_LEN);
@@ -204,14 +321,14 @@ void receive_message(const RNS::Bytes &data)
 
     solar_os_lxmf_payload_t payload = {};
     if (!solar_os_lxmf_unpack_payload(payload_bytes, payload_len, &payload)) {
-        counters.rejected++;
+        count_rejected(in);
         SOLAR_OS_LOGW(TAG, "dropped a malformed message");
         return;
     }
 
     RNS::Identity source = RNS::Identity::recall(source_hash);
     if (!source) {
-        counters.rejected++;
+        count_rejected(in);
         SOLAR_OS_LOGW(TAG, "dropped a message from an unannounced sender");
         return;
     }
@@ -223,27 +340,28 @@ void receive_message(const RNS::Bytes &data)
     if (signed_bytes == nullptr ||
         solar_os_lxmf_signed_payload(payload_bytes, &payload, signed_bytes,
                                      payload.signed_len) == 0U) {
-        counters.rejected++;
+        count_rejected(in);
         return;
     }
-    RNS::Bytes hashed_part(inbound.hash());
+    RNS::Bytes hashed_part(in.inbound.hash());
     hashed_part.append(source_hash);
     hashed_part.append(signed_payload);
     RNS::Bytes signed_part(hashed_part);
     signed_part.append(RNS::Identity::full_hash(hashed_part));
     if (!source.validate(signature, signed_part)) {
-        counters.rejected++;
+        count_rejected(in);
         SOLAR_OS_LOGW(TAG, "dropped a message with an invalid signature");
         return;
     }
 
     char peer_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
     hash_hex(source_hash, peer_hex, sizeof(peer_hex));
+    const bool room = is_group(in, peer_hex);
     solar_os_contact_id_t contact_id = 0;
     solar_os_endpoint_id_t endpoint_id = 0;
     solar_os_endpoint_t endpoint = {};
     const char *name = peer_hex;
-    if (solar_os_contacts_find_endpoint(SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
+    if (solar_os_contacts_find_endpoint(in.id,
                                         source_hash.data(),
                                         source_hash.size(),
                                         &endpoint) == ESP_OK) {
@@ -255,7 +373,8 @@ void receive_message(const RNS::Bytes &data)
         contact.display_name[0] != '\0') {
         name = contact.display_name;
     } else {
-        (void)remember_peer(source_hash, nullptr, &contact_id, &endpoint_id);
+        (void)remember_peer(in.id, source_hash, nullptr, &contact_id,
+                            &endpoint_id);
     }
 
     char *body = inbound_body;
@@ -268,18 +387,22 @@ void receive_message(const RNS::Bytes &data)
                             sizeof(inbound_body) - used, &truncated);
 
     const solar_os_messaging_inbound_t message = {
-        .provider = SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
+        .provider = in.id,
         .conversation_key = peer_hex,
-        .conversation_kind = SOLAR_OS_CONVERSATION_DIRECT,
+        .conversation_kind = room ? SOLAR_OS_CONVERSATION_ROOM :
+                                    SOLAR_OS_CONVERSATION_DIRECT,
         .conversation_title = name,
         .contact_id = contact_id,
         .endpoint_id = endpoint_id,
         .group_ref = 0U,
         .provider_message_key = 0U,
         .timestamp_ms = (uint64_t)(payload.timestamp_s * 1000.0),
+        /* A group server signs what it relays; who wrote it first is the
+         * server's word, not something this can check. */
         .security_flags = SOLAR_OS_SECURITY_ENCRYPTED |
                           SOLAR_OS_SECURITY_PEER_KEY_KNOWN |
-                          SOLAR_OS_SECURITY_TRANSPORT_SECURED,
+                          SOLAR_OS_SECURITY_TRANSPORT_SECURED |
+                          (room ? SOLAR_OS_SECURITY_SENDER_UNVERIFIED : 0U),
         .sender = name,
         .body = body,
         .truncated = truncated,
@@ -287,36 +410,43 @@ void receive_message(const RNS::Bytes &data)
     bool inserted = false;
     const esp_err_t error =
         solar_os_messaging_publish_inbound(&message, &inserted, nullptr);
+    Guard guard;
     if (error != ESP_OK) {
-        counters.last_error = error;
+        in.counters.last_error = error;
         SOLAR_OS_LOGW(TAG, "message not stored: %s", esp_err_to_name(error));
         return;
     }
     if (inserted) {
-        counters.received++;
+        in.counters.received++;
     }
 }
 
 /* An opportunistic packet leaves the recipient hash out, since it is the
  * destination the packet was addressed to. */
-void receive(const RNS::Bytes &data, const RNS::Packet &)
+void receive(const RNS::Bytes &data, const RNS::Packet &packet)
 {
-    receive_message(data);
+    Instance *in = find_by_destination(packet.destination_hash());
+    if (in != nullptr) {
+        receive_message(*in, data);
+    }
 }
 
 /*
  * Over a link the whole message arrives, recipient hash first. This is how
  * an LXMF client sends by default, so it has to be taken; the link proves
- * the packet, because the delivery destination proves everything.
+ * the packet, because the delivery destination proves everything. The
+ * recipient hash also says which instance it is for.
  */
 void receive_whole(const RNS::Bytes &data)
 {
-    if (data.size() <= SOLAR_OS_LXMF_HASH_LEN ||
-        memcmp(data.data(), inbound.hash().data(), SOLAR_OS_LXMF_HASH_LEN) != 0) {
-        counters.rejected++;
+    if (data.size() <= SOLAR_OS_LXMF_HASH_LEN) {
         return;
     }
-    receive_message(data.mid(SOLAR_OS_LXMF_HASH_LEN));
+    Instance *in = find_by_destination(data.mid(0U, SOLAR_OS_LXMF_HASH_LEN));
+    if (in == nullptr) {
+        return;
+    }
+    receive_message(*in, data.mid(SOLAR_OS_LXMF_HASH_LEN));
 }
 
 void receive_over_link(const RNS::Bytes &data, const RNS::Packet &)
@@ -336,7 +466,11 @@ void resource_advertised(const RNS::ResourceAdvertisement &advertisement)
     if (advertisement.get_data_size() <= kMessageMax) {
         return;
     }
-    counters.rejected++;
+    Instance *in = find_by_destination(
+        advertisement.get_link().destination().hash());
+    if (in != nullptr) {
+        count_rejected(*in);
+    }
     SOLAR_OS_LOGW(TAG, "refused a %u byte message",
                   (unsigned)advertisement.get_data_size());
     try {
@@ -372,28 +506,46 @@ void link_established(RNS::Link &link)
     link.set_resource_callback(resource_advertised);
     link.set_resource_started_callback(resource_started);
     link.set_resource_concluded_callback(resource_concluded);
-    counters.links++;
+    Instance *in = find_by_destination(link.destination().hash());
+    if (in != nullptr) {
+        Guard guard;
+        in->counters.links++;
+    }
 }
 
-void conclude(uint32_t request_id, solar_os_delivery_state_t state,
-              const char *error)
+/* Worker thread only. A receipt that outlives its instance finds no match. */
+void conclude(solar_os_messaging_provider_id_t id, uint32_t request_id,
+              solar_os_delivery_state_t state, const char *error)
 {
-    if (!pending.active || pending.request_id != request_id) {
+    Instance *in = nullptr;
+    {
+        Guard guard;
+        in = find_locked(id);
+    }
+    if (in == nullptr || in->removing || !in->pending.active ||
+        in->pending.request_id != request_id) {
         return;
     }
-    pending.active = false;
-    pending.concluded = true;
+    in->pending.active = false;
+    in->pending.concluded = true;
     (void)solar_os_messaging_outbox_update(request_id, state, error);
+    Guard guard;
     if (state == SOLAR_OS_DELIVERY_DELIVERED) {
-        counters.delivered++;
+        in->counters.delivered++;
     } else if (state == SOLAR_OS_DELIVERY_FAILED) {
-        counters.failed++;
+        in->counters.failed++;
     }
 }
 
-void fail(uint32_t request_id, const char *reason)
+void fail(Instance &in, uint32_t request_id, const char *reason)
 {
-    conclude(request_id, SOLAR_OS_DELIVERY_FAILED, reason);
+    conclude(in.id, request_id, SOLAR_OS_DELIVERY_FAILED, reason);
+}
+
+void count_sent(Instance &in)
+{
+    Guard guard;
+    in.counters.sent++;
 }
 
 /*
@@ -402,29 +554,30 @@ void fail(uint32_t request_id, const char *reason)
  * recipient hash in front. Built from the time the message was queued, so
  * that every attempt is the same message to whoever receives two of them.
  */
-bool build_message(RNS::Bytes &message)
+bool build_message(Instance &in, RNS::Bytes &message)
 {
-    const size_t room = strlen(pending_body) + 32U;
+    const size_t room = strlen(in.pending_body) + 32U;
     RNS::Bytes payload;
     uint8_t *packed = payload.writable(room);
     if (packed == nullptr) {
         return false;
     }
     const size_t payload_len = solar_os_lxmf_pack_payload(
-        (double)pending.timestamp_ms / 1000.0, "", pending_body, packed, room);
+        (double)in.pending.timestamp_ms / 1000.0, "", in.pending_body, packed,
+        room);
     if (payload_len == 0U) {
         return false;
     }
     payload.resize(payload_len);
 
-    RNS::Bytes hashed_part(pending.destination);
-    hashed_part.append(inbound.hash());
+    RNS::Bytes hashed_part(in.pending.destination);
+    hashed_part.append(in.inbound.hash());
     hashed_part.append(payload);
     RNS::Bytes signed_part(hashed_part);
     signed_part.append(RNS::Identity::full_hash(hashed_part));
 
-    message = inbound.hash();
-    message.append(inbound.identity().sign(signed_part));
+    message = in.inbound.hash();
+    message.append(in.inbound.identity().sign(signed_part));
     message.append(payload);
     return true;
 }
@@ -444,31 +597,32 @@ RNS::Destination delivery_destination(const RNS::Identity &peer)
  * path request, so an attempt that finds neither is simply early. Only the
  * attempt count ends a message.
  */
-bool transmit()
+bool transmit(Instance &in)
 {
-    RNS::Identity peer = RNS::Identity::recall(pending.destination);
+    RNS::Identity peer = RNS::Identity::recall(in.pending.destination);
     if (!peer) {
-        RNS::Transport::request_path(pending.destination);
+        RNS::Transport::request_path(in.pending.destination);
         return false;
     }
     RNS::Bytes wire;
-    if (!build_message(wire)) {
-        fail(pending.request_id, "Reticulum message could not be packed");
+    if (!build_message(in, wire)) {
+        fail(in, in.pending.request_id, "Reticulum message could not be packed");
         return false;
     }
     RNS::Destination out = delivery_destination(peer);
 
-    const uint32_t request_id = pending.request_id;
+    const solar_os_messaging_provider_id_t id = in.id;
+    const uint32_t request_id = in.pending.request_id;
     RNS::Packet packet(out, wire);
     RNS::PacketReceipt receipt = packet.receipt_send();
     if (!receipt) {
         /* No interface would take it; there may be one by the next try. */
         return false;
     }
-    counters.sent++;
+    count_sent(in);
     receipt.set_timeout(kProofTimeoutSeconds);
-    receipt.set_delivery_handler([request_id](const RNS::PacketReceipt &) {
-        conclude(request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
+    receipt.set_delivery_handler([id, request_id](const RNS::PacketReceipt &) {
+        conclude(id, request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
     });
     /*
      * No timeout handler: an opportunistic packet that draws no proof is
@@ -484,11 +638,12 @@ bool transmit()
  * branch of the LXMF router: try, then ask for a path, then distrust the
  * path you have, then give up.
  */
-void process_opportunistic()
+void process_opportunistic(Instance &in)
 {
+    Pending &pending = in.pending;
     const int64_t now = esp_timer_get_time();
     if (pending.attempts > kMaxDeliveryAttempts) {
-        fail(pending.request_id, "no answer from the Reticulum peer");
+        fail(in, pending.request_id, "no answer from the Reticulum peer");
         return;
     }
     const bool has_path = RNS::Transport::has_path(pending.destination);
@@ -510,44 +665,59 @@ void process_opportunistic()
     if (now > pending.next_attempt_us) {
         pending.attempts++;
         pending.next_attempt_us = now + kDeliveryRetryWaitUs;
-        (void)transmit();
+        (void)transmit(in);
     }
 }
 
-void drop_link()
+void drop_link(Instance &in)
 {
-    if (direct) {
+    if (in.direct) {
         try {
-            direct.teardown();
+            in.direct.teardown();
         } catch (const std::exception &failure) {
             SOLAR_OS_LOGW(TAG, "link not closed: %s", failure.what());
         }
     }
-    direct = RNS::Link({RNS::Type::NONE});
-    direct_peer = RNS::Bytes();
+    in.direct = RNS::Link({RNS::Type::NONE});
+    in.direct_peer = RNS::Bytes();
+    in.sending_resource = RNS::Bytes();
 }
 
 /* The outbound job waits out its interval; a link that has come up is
  * what it was waiting for. */
-void link_ready(RNS::Link &)
+void link_ready(RNS::Link &link)
 {
-    counters.links++;
-    last_process_us = 0;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        Instance &in = slots[i];
+        if (in.in_use && in.direct && in.direct.hash() == link.hash()) {
+            Guard guard;
+            in.counters.links++;
+            in.last_process_us = 0;
+            return;
+        }
+    }
 }
 
 /* How a message sent as a resource ended. */
 void resource_sent(const RNS::Resource &resource)
 {
-    if (!pending.active || !pending.sending) {
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        Instance &in = slots[i];
+        if (!in.in_use || in.removing || !in.pending.active ||
+            !in.pending.sending || in.sending_resource != resource.hash()) {
+            continue;
+        }
+        in.sending_resource = RNS::Bytes();
+        if (resource.status() == RNS::Type::Resource::COMPLETE) {
+            conclude(in.id, in.pending.request_id, SOLAR_OS_DELIVERY_DELIVERED,
+                     nullptr);
+            return;
+        }
+        in.pending.sending = false;
+        in.pending.link_failed = true;
+        in.pending.next_attempt_us = esp_timer_get_time() + kDeliveryRetryWaitUs;
         return;
     }
-    if (resource.status() == RNS::Type::Resource::COMPLETE) {
-        conclude(pending.request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
-        return;
-    }
-    pending.sending = false;
-    pending.link_failed = true;
-    pending.next_attempt_us = esp_timer_get_time() + kDeliveryRetryWaitUs;
 }
 
 /*
@@ -555,45 +725,53 @@ void resource_sent(const RNS::Resource &resource)
  * resource if it does not. Not compressed, since the only compression a peer
  * would undo is one this does not have.
  */
-void send_over_link()
+void send_over_link(Instance &in)
 {
     RNS::Bytes message;
-    if (!build_message(message)) {
-        fail(pending.request_id, "Reticulum message could not be packed");
+    if (!build_message(in, message)) {
+        fail(in, in.pending.request_id, "Reticulum message could not be packed");
         return;
     }
-    RNS::Bytes wire(pending.destination);
+    RNS::Bytes wire(in.pending.destination);
     wire.append(message);
     if (wire.size() > kMessageMax) {
         /* Permanent: no number of attempts shortens a message. */
-        fail(pending.request_id, "Reticulum message is too long");
+        fail(in, in.pending.request_id, "Reticulum message is too long");
         return;
     }
-    const uint32_t request_id = pending.request_id;
+    const solar_os_messaging_provider_id_t id = in.id;
+    const uint32_t request_id = in.pending.request_id;
     if (wire.size() <= SOLAR_OS_LXMF_LINK_PACKET_MAX) {
-        RNS::Packet packet(direct, wire);
+        RNS::Packet packet(in.direct, wire);
         RNS::PacketReceipt receipt = packet.receipt_send();
         if (!receipt) {
             return;
         }
         receipt.set_timeout(kProofTimeoutSeconds);
-        receipt.set_delivery_handler([request_id](const RNS::PacketReceipt &) {
-            conclude(request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
+        receipt.set_delivery_handler([id, request_id](const RNS::PacketReceipt &) {
+            conclude(id, request_id, SOLAR_OS_DELIVERY_DELIVERED, nullptr);
         });
-        receipt.set_timeout_handler([request_id](const RNS::PacketReceipt &) {
-            if (pending.active && pending.request_id == request_id) {
-                pending.sending = false;
-                pending.link_failed = true;
+        receipt.set_timeout_handler([id, request_id](const RNS::PacketReceipt &) {
+            Instance *owner = nullptr;
+            {
+                Guard guard;
+                owner = find_locked(id);
+            }
+            if (owner != nullptr && owner->pending.active &&
+                owner->pending.request_id == request_id) {
+                owner->pending.sending = false;
+                owner->pending.link_failed = true;
             }
         });
     } else {
-        RNS::Resource resource(wire, direct, true, false, resource_sent);
+        RNS::Resource resource(wire, in.direct, true, false, resource_sent);
         if (!resource) {
             return;
         }
+        in.sending_resource = resource.hash();
     }
-    counters.sent++;
-    pending.sending = true;
+    count_sent(in);
+    in.pending.sending = true;
 }
 
 /*
@@ -603,27 +781,28 @@ void send_over_link()
  * fits one packet is sent without a link once the tries for one run out,
  * which is what reaches a peer that can hear a packet and not hold a link.
  */
-void process_outbound()
+void process_outbound(Instance &in)
 {
+    Pending &pending = in.pending;
     if (pending.opportunistic) {
-        process_opportunistic();
+        process_opportunistic(in);
         return;
     }
     const int64_t now = esp_timer_get_time();
-    if (direct && (pending.link_failed ||
-                   direct_peer != pending.destination)) {
-        drop_link();
+    if (in.direct && (pending.link_failed ||
+                      in.direct_peer != pending.destination)) {
+        drop_link(in);
     }
     pending.link_failed = false;
-    if (direct) {
-        switch (direct.status()) {
+    if (in.direct) {
+        switch (in.direct.status()) {
         case RNS::Type::Link::ACTIVE:
             if (!pending.sending && now > pending.next_attempt_us) {
-                send_over_link();
+                send_over_link(in);
             }
             return;
         case RNS::Type::Link::CLOSED:
-            drop_link();
+            drop_link(in);
             pending.sending = false;
             pending.next_attempt_us = now + kDeliveryRetryWaitUs;
             return;
@@ -635,13 +814,13 @@ void process_outbound()
         return;
     }
     if (pending.attempts >= kMaxDeliveryAttempts) {
-        if (strlen(pending_body) + kOverhead + 16U <= SOLAR_OS_LXMF_PACKET_MAX) {
+        if (strlen(in.pending_body) + kOverhead + 16U <= SOLAR_OS_LXMF_PACKET_MAX) {
             pending.opportunistic = true;
             pending.attempts = 0U;
             pending.next_attempt_us = 0;
-            process_opportunistic();
+            process_opportunistic(in);
         } else {
-            fail(pending.request_id, "no link to the Reticulum peer");
+            fail(in, pending.request_id, "no link to the Reticulum peer");
         }
         return;
     }
@@ -653,33 +832,250 @@ void process_outbound()
         pending.next_attempt_us = now + kPathRequestWaitUs;
         return;
     }
-    direct = RNS::Link(delivery_destination(peer), link_ready);
-    direct_peer = pending.destination;
+    in.direct = RNS::Link(delivery_destination(peer), link_ready);
+    in.direct_peer = pending.destination;
 }
 
-void start_next()
+void start_next(Instance &in)
 {
     solar_os_messaging_outbound_t outbound = {};
-    if (solar_os_messaging_outbox_peek(SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
-                                       &outbound) != ESP_OK) {
+    if (solar_os_messaging_outbox_peek(in.id, &outbound) != ESP_OK) {
         return;
     }
-    pending = Pending{};
-    pending.active = true;
-    pending.request_id = outbound.id;
-    pending.timestamp_ms = now_ms();
-    strlcpy(pending_body, outbound.body, sizeof(pending_body));
+    in.pending = Pending{};
+    in.pending.active = true;
+    in.pending.request_id = outbound.id;
+    in.pending.timestamp_ms = now_ms();
+    strlcpy(in.pending_body, outbound.body, SOLAR_OS_MESSAGING_BODY_MAX);
 
     solar_os_messaging_conversation_t conversation = {};
     if (solar_os_messaging_conversation_get(outbound.conversation_id,
                                             &conversation) != ESP_OK ||
-        !hex_to_hash(conversation.provider_key, pending.destination)) {
-        fail(outbound.id, "Reticulum conversation has no destination");
+        !hex_to_hash(conversation.provider_key, in.pending.destination)) {
+        fail(in, outbound.id, "Reticulum conversation has no destination");
         return;
     }
     (void)solar_os_messaging_outbox_update(
         outbound.id, SOLAR_OS_DELIVERY_SENDING, nullptr);
-    process_outbound();
+    process_outbound(in);
+}
+
+/* This instance's own identity, made and kept on first use. */
+esp_err_t load_identity(Instance &in)
+{
+    solar_os_credential_info_t record = {};
+    esp_err_t error = solar_os_credentials_find(
+        in.id, SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY, kIdentityLabel, &record);
+    if (error == ESP_ERR_NOT_FOUND) {
+        RNS::Identity fresh;
+        error = solar_os_credentials_put(
+            in.id, SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY, kIdentityLabel,
+            fresh.get_private_key().data(), fresh.get_private_key().size(),
+            false, nullptr);
+        if (error == ESP_OK) {
+            in.identity = fresh;
+        }
+        return error;
+    }
+    if (error != ESP_OK) {
+        return error;
+    }
+    uint8_t secret[kPrivateKeySize];
+    size_t length = 0U;
+    error = solar_os_credentials_read_secret(record.id, secret, sizeof(secret),
+                                             &length);
+    if (error == ESP_OK && length != kPrivateKeySize) {
+        error = ESP_ERR_INVALID_SIZE;
+    }
+    if (error == ESP_OK) {
+        RNS::Identity loaded(false);
+        if (loaded.load_private_key(RNS::Bytes(secret, sizeof(secret)))) {
+            in.identity = loaded;
+        } else {
+            error = ESP_ERR_INVALID_STATE;
+        }
+    }
+    solar_os_credentials_wipe(secret, sizeof(secret));
+    return error;
+}
+
+bool any_listening()
+{
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        if (slots[i].in_use && slots[i].inbound) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Registers the delivery destination. Worker thread only. */
+esp_err_t listen(Instance &in)
+{
+    if (!in.identity) {
+        const esp_err_t error = load_identity(in);
+        if (error != ESP_OK) {
+            SOLAR_OS_LOGE(TAG, "no identity: %s", esp_err_to_name(error));
+            (void)solar_os_messaging_provider_set_status(
+                in.id, false, false, error, "identity unavailable");
+            return error;
+        }
+    }
+    try {
+        if (!announce_handler) {
+            announce_handler = std::make_shared<DeliveryAnnounces>();
+            RNS::Transport::register_announce_handler(announce_handler);
+        }
+        in.inbound = RNS::Destination(in.identity,
+                                      RNS::Type::Destination::IN,
+                                      RNS::Type::Destination::SINGLE,
+                                      SOLAR_OS_LXMF_APP_NAME,
+                                      SOLAR_OS_LXMF_ASPECT);
+        in.inbound.set_packet_callback(receive);
+        in.inbound.set_link_established_callback(link_established);
+        in.inbound.set_proof_strategy(RNS::Type::Destination::PROVE_ALL);
+    } catch (const std::exception &failure) {
+        SOLAR_OS_LOGE(TAG, "attach failed: %s", failure.what());
+        in.inbound = RNS::Destination({RNS::Type::NONE});
+        Guard guard;
+        in.counters.last_error = ESP_FAIL;
+        return ESP_FAIL;
+    }
+    in.pending = Pending{};
+    {
+        Guard guard;
+        in.listening = true;
+        /* A destination nobody has heard of is unreachable: announce it. */
+        in.announce_requested = true;
+        hash_hex(in.inbound.hash(), in.destination_hex,
+                 sizeof(in.destination_hex));
+    }
+    (void)solar_os_messaging_provider_set_status(in.id, true, true, ESP_OK,
+                                                 nullptr);
+    return ESP_OK;
+}
+
+/* Worker thread only. */
+void stop_listening(Instance &in, const char *detail)
+{
+    if (!in.inbound) {
+        return;
+    }
+    if (in.pending.active) {
+        /* Stopping is not a delivery failure. The message goes back on the
+         * queue so it is tried again when the instance returns. */
+        (void)solar_os_messaging_outbox_update(
+            in.pending.request_id, SOLAR_OS_DELIVERY_QUEUED, nullptr);
+        in.pending = Pending{};
+    }
+    drop_link(in);
+    try {
+        RNS::Transport::deregister_destination(in.inbound);
+    } catch (const std::exception &failure) {
+        SOLAR_OS_LOGE(TAG, "detach failed: %s", failure.what());
+    }
+    in.inbound = RNS::Destination({RNS::Type::NONE});
+    {
+        Guard guard;
+        in.listening = false;
+        in.destination_hex[0] = '\0';
+    }
+    if (!any_listening() && announce_handler) {
+        try {
+            RNS::Transport::deregister_announce_handler(announce_handler);
+        } catch (const std::exception &failure) {
+            SOLAR_OS_LOGE(TAG, "detach failed: %s", failure.what());
+        }
+        announce_handler.reset();
+    }
+    if (!in.removing) {
+        (void)solar_os_messaging_provider_set_status(in.id, false, false,
+                                                     ESP_OK, detail);
+    }
+}
+
+void announce(Instance &in)
+{
+    char name[SOLAR_OS_LXMF_NAME_MAX + 1U];
+    display_name(in, name, sizeof(name));
+    uint8_t app_data[SOLAR_OS_LXMF_ANNOUNCE_MAX];
+    const size_t length =
+        solar_os_lxmf_pack_announce(name, app_data, sizeof(app_data));
+    esp_err_t result = ESP_FAIL;
+    try {
+        if (length > 0U) {
+            in.inbound.announce(RNS::Bytes(app_data, length));
+            result = ESP_OK;
+        }
+    } catch (const std::exception &failure) {
+        SOLAR_OS_LOGE(TAG, "announce failed: %s", failure.what());
+    }
+    Guard guard;
+    if (result == ESP_OK) {
+        in.counters.announces_sent++;
+    }
+    in.announce_result = result;
+    in.announces_done++;
+}
+
+void tick_instance(Instance &in)
+{
+    bool want = false;
+    bool announce_now = false;
+    {
+        Guard guard;
+        want = !in.removing && in.config.enabled;
+        announce_now = in.announce_requested && in.inbound;
+        if (announce_now) {
+            in.announce_requested = false;
+        }
+    }
+    /* Connect, disconnect and removal only change the profile; the worker
+     * owns the destination and follows it here. */
+    if (want && !in.inbound) {
+        if (listen(in) != ESP_OK) {
+            return;
+        }
+        Guard guard;
+        announce_now = in.announce_requested;
+        in.announce_requested = false;
+    } else if (!want && in.inbound) {
+        stop_listening(in, "disconnected");
+    }
+    if (!in.inbound) {
+        return;
+    }
+    try {
+        if (announce_now) {
+            announce(in);
+        }
+        /* The outbound job runs on its own interval, as the LXMF router's
+         * does, rather than on every pass of the Reticulum loop. */
+        const int64_t now = esp_timer_get_time();
+        if (now - in.last_process_us >= kProcessingIntervalUs) {
+            in.last_process_us = now;
+            if (in.pending.active) {
+                process_outbound(in);
+            }
+            if (!in.pending.active) {
+                start_next(in);
+            }
+            if (!in.pending.active && in.direct &&
+                (in.direct.status() == RNS::Type::Link::CLOSED ||
+                 in.direct.no_data_for() > kLinkIdleSeconds)) {
+                drop_link(in);
+            }
+        }
+    } catch (const std::exception &failure) {
+        SOLAR_OS_LOGE(TAG, "tick failed: %s", failure.what());
+        {
+            Guard guard;
+            in.counters.last_error = ESP_FAIL;
+        }
+        if (in.pending.active) {
+            fail(in, in.pending.request_id, "Reticulum send failed");
+        }
+    }
 }
 
 }  // namespace
@@ -687,124 +1083,64 @@ void start_next()
 namespace solar_os {
 namespace lxmf {
 
-esp_err_t attach(const RNS::Identity &identity)
+esp_err_t attach(const RNS::Identity &)
 {
-    ensure_lock();
-    if (attached) {
-        return ESP_OK;
+    const esp_err_t error = ensure_slots();
+    if (error != ESP_OK) {
+        return error;
     }
-    try {
-        inbound = RNS::Destination(identity,
-                                   RNS::Type::Destination::IN,
-                                   RNS::Type::Destination::SINGLE,
-                                   SOLAR_OS_LXMF_APP_NAME,
-                                   SOLAR_OS_LXMF_ASPECT);
-        inbound.set_packet_callback(receive);
-        inbound.set_link_established_callback(link_established);
-        inbound.set_proof_strategy(RNS::Type::Destination::PROVE_ALL);
-        announce_handler = std::make_shared<DeliveryAnnounces>();
-        RNS::Transport::register_announce_handler(announce_handler);
-    } catch (const std::exception &failure) {
-        SOLAR_OS_LOGE(TAG, "attach failed: %s", failure.what());
-        counters.last_error = ESP_FAIL;
-        return ESP_FAIL;
+    job_attached = true;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        Guard guard;
+        if (slots[i].in_use && !slots[i].config.enabled) {
+            (void)solar_os_messaging_provider_set_status(
+                slots[i].id, false, false, ESP_OK, "disconnected");
+        }
     }
-    attached = true;
-    pending = Pending{};
-    (void)solar_os_messaging_init();
-    (void)solar_os_messaging_provider_set_status(
-        SOLAR_OS_MESSAGING_PROVIDER_RETICULUM, true, true, ESP_OK, nullptr);
     return ESP_OK;
 }
 
 void detach()
 {
-    if (!attached) {
+    if (!job_attached || slots == nullptr) {
         return;
     }
-    attached = false;
-    if (pending.active) {
-        /* Stopping is not a delivery failure. The message goes back on the
-         * queue so it is tried again when Reticulum returns. */
-        (void)solar_os_messaging_outbox_update(
-            pending.request_id, SOLAR_OS_DELIVERY_QUEUED, nullptr);
-        pending = Pending{};
-    }
-    drop_link();
-    try {
-        RNS::Transport::deregister_announce_handler(announce_handler);
-        if (inbound) {
-            RNS::Transport::deregister_destination(inbound);
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        if (slots[i].in_use) {
+            stop_listening(slots[i], nullptr);
         }
-    } catch (const std::exception &failure) {
-        SOLAR_OS_LOGE(TAG, "detach failed: %s", failure.what());
     }
-    announce_handler.reset();
-    inbound = RNS::Destination({RNS::Type::NONE});
-    (void)solar_os_messaging_provider_set_status(
-        SOLAR_OS_MESSAGING_PROVIDER_RETICULUM, false, false, ESP_OK, nullptr);
+    job_attached = false;
 }
 
 void request_announce()
 {
+    if (slots == nullptr) {
+        return;
+    }
     Guard guard;
-    announce_requested = true;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        if (slots[i].in_use) {
+            slots[i].announce_requested = true;
+        }
+    }
 }
 
 void tick()
 {
-    if (!attached) {
+    if (!job_attached || slots == nullptr) {
         return;
     }
-    bool announce_now = false;
-    {
-        Guard guard;
-        announce_now = announce_requested;
-        announce_requested = false;
-    }
-    try {
-        if (announce_now) {
-            char name[SOLAR_OS_LXMF_NAME_MAX + 1U];
-            display_name(name, sizeof(name));
-            uint8_t app_data[SOLAR_OS_LXMF_ANNOUNCE_MAX];
-            const size_t length = solar_os_lxmf_pack_announce(
-                name, app_data, sizeof(app_data));
-            esp_err_t result = ESP_FAIL;
-            try {
-                if (length > 0U) {
-                    inbound.announce(RNS::Bytes(app_data, length));
-                    counters.announces_sent++;
-                    result = ESP_OK;
-                }
-            } catch (const std::exception &failure) {
-                SOLAR_OS_LOGE(TAG, "announce failed: %s", failure.what());
-            }
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        bool active = false;
+        {
             Guard guard;
-            announce_result = result;
-            announces_done++;
+            active = slots[i].in_use;
         }
-        /* The outbound job runs on its own interval, as the LXMF router's
-         * does, rather than on every pass of the Reticulum loop. */
-        const int64_t now = esp_timer_get_time();
-        if (now - last_process_us >= kProcessingIntervalUs) {
-            last_process_us = now;
-            if (pending.active) {
-                process_outbound();
-            }
-            if (!pending.active) {
-                start_next();
-            }
-            if (!pending.active && direct &&
-                (direct.status() == RNS::Type::Link::CLOSED ||
-                 direct.no_data_for() > kLinkIdleSeconds)) {
-                drop_link();
-            }
-        }
-    } catch (const std::exception &failure) {
-        SOLAR_OS_LOGE(TAG, "tick failed: %s", failure.what());
-        counters.last_error = ESP_FAIL;
-        if (pending.active) {
-            fail(pending.request_id, "Reticulum send failed");
+        if (active) {
+            tick_instance(slots[i]);
+        } else if (slots[i].inbound) {
+            stop_listening(slots[i], nullptr);
         }
     }
 }
@@ -812,67 +1148,321 @@ void tick()
 }  // namespace lxmf
 }  // namespace solar_os
 
-esp_err_t solar_os_lxmf_get_status(solar_os_lxmf_status_t *status)
+namespace {
+
+bool text_valid(const char *text, size_t size)
 {
-    if (status == nullptr) {
-        return ESP_ERR_INVALID_ARG;
+    if (strnlen(text, size) >= size) {
+        return false;
     }
-    ensure_lock();
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (*p < 0x20U || *p == 0x7FU) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool config_valid(const solar_os_lxmf_config_t &config)
+{
+    if (config.version != 1U ||
+        !text_valid(config.display_name, sizeof(config.display_name))) {
+        return false;
+    }
+    for (size_t i = 0; i < SOLAR_OS_LXMF_GROUP_CAPACITY; i++) {
+        char canonical[SOLAR_OS_LXMF_HASH_HEX_LEN];
+        if (config.groups[i][0] != '\0' &&
+            (!solar_os_lxmf_normalize_hash(config.groups[i], canonical,
+                                           sizeof(canonical)) ||
+             strcmp(canonical, config.groups[i]) != 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+solar_os_lxmf_config_t current_config(const Instance &in)
+{
     Guard guard;
-    *status = counters;
-    status->attached = attached;
-    display_name(status->display_name, sizeof(status->display_name));
-    if (attached && inbound) {
-        hash_hex(inbound.hash(), status->destination_hex,
-                 sizeof(status->destination_hex));
+    return in.config;
+}
+
+/* Caller holds edit_lock. The file is written before the profile changes,
+ * so a failed save leaves both as they were. */
+esp_err_t save_config(Instance &in, const solar_os_lxmf_config_t &next)
+{
+    const esp_err_t error =
+        solar_os_messaging_profile_save(in.id, &next, sizeof(next));
+    if (error == ESP_OK) {
+        Guard guard;
+        in.config = next;
+    }
+    return error;
+}
+
+/* Caller holds edit_lock. */
+esp_err_t attach_instance(solar_os_messaging_provider_id_t id,
+                          const char *name,
+                          const solar_os_lxmf_config_t &config)
+{
+    Instance *in = nullptr;
+    {
+        Guard guard;
+        if (find_locked(id) != nullptr) {
+            return ESP_OK;
+        }
+        for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX && in == nullptr; i++) {
+            /* A slot the worker has not yet released is not free. */
+            if (!slots[i].in_use && !slots[i].listening) {
+                in = &slots[i];
+            }
+        }
+        if (in == nullptr) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    const esp_err_t error = solar_os_messaging_instance_register(
+        id, SOLAR_OS_LXMF_CLASS, name, in);
+    if (error != ESP_OK) {
+        return error;
+    }
+    {
+        Guard guard;
+        in->id = id;
+        in->config = config;
+        in->removing = false;
+        in->listening = false;
+        in->announce_requested = false;
+        in->announces_done = 0U;
+        in->announce_result = ESP_OK;
+        in->destination_hex[0] = '\0';
+        in->counters = solar_os_lxmf_status_t{};
+        in->in_use = true;
+    }
+    /* Worker-owned, but the slot is not in use until now. */
+    in->identity = RNS::Identity({RNS::Type::NONE});
+    in->pending = Pending{};
+    in->last_process_us = 0;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_GROUP_CAPACITY; i++) {
+        if (config.groups[i][0] == '\0') {
+            continue;
+        }
+        const solar_os_messaging_conversation_upsert_t request = {
+            .provider = id,
+            .provider_key = config.groups[i],
+            .kind = SOLAR_OS_CONVERSATION_ROOM,
+            .title = config.groups[i],
+            .contact_id = 0U,
+            .endpoint_id = 0U,
+            .group_ref = 0U,
+            .security_flags = SOLAR_OS_SECURITY_ENCRYPTED |
+                              SOLAR_OS_SECURITY_SENDER_UNVERIFIED,
+        };
+        (void)solar_os_messaging_conversation_upsert(&request, nullptr);
+        (void)solar_os_messaging_join_update(
+            id, config.groups[i], SOLAR_OS_MESSAGING_JOIN_JOINED, nullptr);
     }
     return ESP_OK;
 }
 
-esp_err_t solar_os_lxmf_announce(void)
+esp_err_t create_instance(const char *name, const char *display,
+                          solar_os_messaging_provider_id_t *id)
 {
-    ensure_lock();
-    uint32_t before = 0;
+    solar_os_lxmf_config_t config = {};
+    config.version = 1U;
+    config.enabled = true;
+    if (display != nullptr &&
+        strlcpy(config.display_name, display, sizeof(config.display_name)) >=
+            sizeof(config.display_name)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!config_valid(config)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    EditGuard edit;
     {
         Guard guard;
-        if (!attached) {
-            return ESP_ERR_INVALID_STATE;
+        size_t used = 0;
+        for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+            if (slots[i].in_use || slots[i].listening) {
+                used++;
+            }
         }
-        before = announces_done;
-        announce_requested = true;
-    }
-    /* The worker makes the announce and the radio takes its time over it, so
-     * this waits to answer whether it went, as the node's own announce does. */
-    const int64_t deadline = esp_timer_get_time() + kAnnounceWaitUs;
-    while (esp_timer_get_time() < deadline) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-        Guard guard;
-        if (!attached) {
-            return ESP_ERR_INVALID_STATE;
-        }
-        if (announces_done != before) {
-            return announce_result;
+        if (used >= SOLAR_OS_LXMF_INSTANCE_MAX) {
+            return ESP_ERR_NO_MEM;
         }
     }
-    return ESP_ERR_TIMEOUT;
+    solar_os_messaging_provider_id_t created = 0;
+    esp_err_t error = solar_os_messaging_instance_create(
+        SOLAR_OS_LXMF_CLASS, name, &config, sizeof(config), &created);
+    if (error == ESP_OK) {
+        error = attach_instance(created, name, config);
+    }
+    if (error == ESP_OK && id != nullptr) {
+        *id = created;
+    }
+    return error;
 }
 
-esp_err_t solar_os_lxmf_open(const char *destination_hex,
-                             solar_os_conversation_id_t *conversation_id)
+esp_err_t class_create(const char *name, int argc, const char *const *argv,
+                       solar_os_messaging_provider_id_t *id)
+{
+    if (argc > 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_err_t error = ensure_slots();
+    if (error != ESP_OK) {
+        return error;
+    }
+    return create_instance(name, argc == 1 ? argv[0] : nullptr, id);
+}
+
+/* configure NAME DISPLAY_NAME, or hostname to announce the device's own. */
+esp_err_t class_configure(void *context, int argc, const char *const *argv)
+{
+    Instance &in = *static_cast<Instance *>(context);
+    if (argc != 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    EditGuard edit;
+    solar_os_lxmf_config_t next = current_config(in);
+    const char *display = strcmp(argv[0], "hostname") == 0 ? "" : argv[0];
+    if (strlcpy(next.display_name, display, sizeof(next.display_name)) >=
+            sizeof(next.display_name) ||
+        !config_valid(next)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_err_t error = save_config(in, next);
+    if (error == ESP_OK) {
+        /* Peers learn a name from the announce, so say it again. */
+        Guard guard;
+        in.announce_requested = true;
+    }
+    return error;
+}
+
+esp_err_t class_connect(void *context, bool enabled)
+{
+    Instance &in = *static_cast<Instance *>(context);
+    EditGuard edit;
+    solar_os_lxmf_config_t next = current_config(in);
+    next.enabled = enabled;
+    return save_config(in, next);
+}
+
+esp_err_t class_normalize(void *, const char *target, char *out, size_t size)
+{
+    return solar_os_lxmf_normalize_hash(target, out, size) ? ESP_OK :
+                                                             ESP_ERR_INVALID_ARG;
+}
+
+/* A known peer's name, or false. */
+bool peer_name(solar_os_messaging_provider_id_t id, const char *peer_hex,
+               char *name, size_t size)
 {
     RNS::Bytes hash;
-    if (!hex_to_hash(destination_hex, hash)) {
+    if (!hex_to_hash(peer_hex, hash)) {
+        return false;
+    }
+    solar_os_endpoint_t endpoint = {};
+    if (solar_os_contacts_find_endpoint(id, hash.data(), hash.size(),
+                                        &endpoint) != ESP_OK) {
+        return false;
+    }
+    solar_os_contact_t contact = {};
+    if (solar_os_contacts_get(endpoint.contact_id, &contact) != ESP_OK) {
+        return false;
+    }
+    strlcpy(name, contact.display_name, size);
+    return name[0] != '\0';
+}
+
+/*
+ * A group is a group-server peer: an LXMF destination that relays what it is
+ * sent to its members. Joining makes its messages a room here and keeps it
+ * across restarts; whether the server counts this node as a member is its
+ * own rule, often a join command sent to it as a message.
+ */
+esp_err_t class_join(void *context, const char *target)
+{
+    Instance &in = *static_cast<Instance *>(context);
+    EditGuard edit;
+    solar_os_lxmf_config_t next = current_config(in);
+    int empty = -1;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_GROUP_CAPACITY; i++) {
+        if (strcmp(next.groups[i], target) == 0) {
+            empty = -2;
+            break;
+        }
+        if (next.groups[i][0] == '\0' && empty < 0) {
+            empty = (int)i;
+        }
+    }
+    if (empty == -1) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t error = ESP_OK;
+    if (empty >= 0) {
+        strlcpy(next.groups[empty], target, sizeof(next.groups[empty]));
+        error = save_config(in, next);
+    }
+    if (error != ESP_OK) {
+        return error;
+    }
+    char name[SOLAR_OS_MESSAGING_TITLE_MAX];
+    if (peer_name(in.id, target, name, sizeof(name))) {
+        const solar_os_messaging_conversation_upsert_t request = {
+            .provider = in.id,
+            .provider_key = target,
+            .kind = SOLAR_OS_CONVERSATION_ROOM,
+            .title = name,
+            .contact_id = 0U,
+            .endpoint_id = 0U,
+            .group_ref = 0U,
+            .security_flags = SOLAR_OS_SECURITY_ENCRYPTED |
+                              SOLAR_OS_SECURITY_SENDER_UNVERIFIED,
+        };
+        (void)solar_os_messaging_conversation_upsert(&request, nullptr);
+    }
+    return solar_os_messaging_join_update(
+        in.id, target, SOLAR_OS_MESSAGING_JOIN_JOINED, nullptr);
+}
+
+esp_err_t class_leave(void *context, const char *target)
+{
+    Instance &in = *static_cast<Instance *>(context);
+    EditGuard edit;
+    solar_os_lxmf_config_t next = current_config(in);
+    bool found = false;
+    for (size_t i = 0; i < SOLAR_OS_LXMF_GROUP_CAPACITY; i++) {
+        if (strcmp(next.groups[i], target) == 0) {
+            next.groups[i][0] = '\0';
+            found = true;
+        }
+    }
+    const esp_err_t error = found ? save_config(in, next) : ESP_OK;
+    if (error != ESP_OK) {
+        return error;
+    }
+    return solar_os_messaging_join_update(
+        in.id, target, SOLAR_OS_MESSAGING_JOIN_LEFT, nullptr);
+}
+
+esp_err_t class_direct(void *context, const char *peer_hex,
+                       solar_os_conversation_id_t *conversation_id)
+{
+    Instance &in = *static_cast<Instance *>(context);
+    RNS::Bytes hash;
+    if (!hex_to_hash(peer_hex, hash)) {
         return ESP_ERR_INVALID_ARG;
     }
     solar_os_contact_id_t contact_id = 0;
     solar_os_endpoint_id_t endpoint_id = 0;
     const esp_err_t error =
-        remember_peer(hash, nullptr, &contact_id, &endpoint_id);
+        remember_peer(in.id, hash, nullptr, &contact_id, &endpoint_id);
     if (error != ESP_OK) {
         return error;
     }
-    char peer_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
-    hash_hex(hash, peer_hex, sizeof(peer_hex));
     /* A conversation that exists is returned as it is: an upsert would put
      * the bare hash back over the name and security it has earned since. */
     std::vector<solar_os_messaging_conversation_t> known(
@@ -880,7 +1470,7 @@ esp_err_t solar_os_lxmf_open(const char *destination_hex,
     const size_t count =
         solar_os_messaging_conversation_snapshot(known.data(), known.size());
     for (size_t i = 0; i < count; i++) {
-        if (known[i].provider == SOLAR_OS_MESSAGING_PROVIDER_RETICULUM &&
+        if (known[i].provider == in.id &&
             strcmp(known[i].provider_key, peer_hex) == 0) {
             if (conversation_id != nullptr) {
                 *conversation_id = known[i].id;
@@ -889,7 +1479,7 @@ esp_err_t solar_os_lxmf_open(const char *destination_hex,
         }
     }
     const solar_os_messaging_conversation_upsert_t request = {
-        .provider = SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
+        .provider = in.id,
         .provider_key = peer_hex,
         .kind = SOLAR_OS_CONVERSATION_DIRECT,
         .title = peer_hex,
@@ -899,4 +1489,209 @@ esp_err_t solar_os_lxmf_open(const char *destination_hex,
         .security_flags = SOLAR_OS_SECURITY_ENCRYPTED,
     };
     return solar_os_messaging_conversation_upsert(&request, conversation_id);
+}
+
+/*
+ * Removal withdraws the destination first. The worker does that, so this
+ * marks the instance and waits for it; with the job stopped there is
+ * nothing to withdraw. Messaging then deletes the profile, history and
+ * identity, and finish frees the slot.
+ */
+bool listening(const Instance &in)
+{
+    Guard guard;
+    return in.listening;
+}
+
+esp_err_t class_remove_prepare(void *context)
+{
+    Instance &in = *static_cast<Instance *>(context);
+    xSemaphoreTake(edit_lock, portMAX_DELAY);
+    {
+        Guard guard;
+        in.removing = true;
+    }
+    const int64_t deadline = esp_timer_get_time() + kReleaseWaitUs;
+    while (job_attached && listening(in)) {
+        if (esp_timer_get_time() > deadline) {
+            Guard guard;
+            in.removing = false;
+            xSemaphoreGive(edit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return ESP_OK;
+}
+
+void class_remove_finish(void *context, bool removed)
+{
+    Instance &in = *static_cast<Instance *>(context);
+    {
+        Guard guard;
+        if (removed) {
+            in.in_use = false;
+            in.id = 0;
+            in.config = solar_os_lxmf_config_t{};
+        }
+        in.removing = false;
+    }
+    xSemaphoreGive(edit_lock);
+}
+
+const solar_os_messaging_provider_class_t lxmf_class = {
+    .name = SOLAR_OS_LXMF_CLASS,
+    .capabilities = SOLAR_OS_ENDPOINT_CAP_DIRECT | SOLAR_OS_ENDPOINT_CAP_ROOM |
+                    SOLAR_OS_ENDPOINT_CAP_ACK,
+    .connection_oriented = false,
+    .join = class_join,
+    .join_open = nullptr,
+    .leave = class_leave,
+    .direct_open = class_direct,
+    .connect = class_connect,
+    .create = class_create,
+    .configure = class_configure,
+    .normalize_target = class_normalize,
+    .remove_prepare = class_remove_prepare,
+    .remove_finish = class_remove_finish,
+};
+
+}  // namespace
+
+esp_err_t solar_os_lxmf_init(void)
+{
+    esp_err_t error = ensure_slots();
+    if (error != ESP_OK) {
+        return error;
+    }
+    if (class_registered) {
+        return ESP_OK;
+    }
+    error = solar_os_messaging_class_register(&lxmf_class);
+    if (error != ESP_OK) {
+        return error;
+    }
+    class_registered = true;
+    solar_os_messaging_provider_id_t cursor = 0;
+    solar_os_messaging_provider_status_t status = {};
+    while (solar_os_messaging_provider_next(&cursor, &status)) {
+        if (strcmp(status.class_name, SOLAR_OS_LXMF_CLASS) != 0) {
+            continue;
+        }
+        solar_os_lxmf_config_t config = {};
+        error = solar_os_messaging_profile_load(cursor, &config, sizeof(config));
+        if (error == ESP_OK && !config_valid(config)) {
+            error = ESP_ERR_INVALID_ARG;
+        }
+        if (error == ESP_OK) {
+            EditGuard edit;
+            error = attach_instance(cursor, status.name, config);
+        }
+        if (error != ESP_OK) {
+            (void)solar_os_messaging_provider_set_status(
+                cursor, false, false, error, "LXMF profile unavailable or invalid");
+        }
+    }
+    return ESP_OK;
+}
+
+esp_err_t solar_os_lxmf_create_default(void)
+{
+    esp_err_t error = solar_os_lxmf_init();
+    if (error != ESP_OK) {
+        return error;
+    }
+    {
+        Guard guard;
+        for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+            if (slots[i].in_use) {
+                return ESP_OK;
+            }
+        }
+    }
+    return create_instance(SOLAR_OS_LXMF_DEFAULT_INSTANCE, nullptr, nullptr);
+}
+
+esp_err_t solar_os_lxmf_open(const char *destination_hex,
+                             solar_os_conversation_id_t *conversation_id)
+{
+    if (solar_os_lxmf_init() != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    solar_os_messaging_provider_id_t id = 0;
+    {
+        Guard guard;
+        for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX && id == 0; i++) {
+            if (slots[i].in_use) {
+                id = slots[i].id;
+            }
+        }
+    }
+    if (id == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    return solar_os_messaging_open_direct(id, destination_hex, conversation_id);
+}
+
+esp_err_t solar_os_lxmf_get_status(solar_os_messaging_provider_id_t id,
+                                   solar_os_lxmf_status_t *status)
+{
+    if (status == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (solar_os_lxmf_init() != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    Instance *in = nullptr;
+    {
+        Guard guard;
+        in = find_locked(id);
+    }
+    if (in == nullptr) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    char name[sizeof(status->display_name)];
+    display_name(*in, name, sizeof(name));
+    Guard guard;
+    *status = in->counters;
+    status->attached = in->listening;
+    strlcpy(status->display_name, name, sizeof(status->display_name));
+    strlcpy(status->destination_hex, in->destination_hex,
+            sizeof(status->destination_hex));
+    return ESP_OK;
+}
+
+esp_err_t solar_os_lxmf_announce(solar_os_messaging_provider_id_t id)
+{
+    if (solar_os_lxmf_init() != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    Instance *in = nullptr;
+    uint32_t before = 0;
+    {
+        Guard guard;
+        in = find_locked(id);
+        if (in == nullptr) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        if (!in->listening) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        before = in->announces_done;
+        in->announce_requested = true;
+    }
+    /* The worker makes the announce and the radio takes its time over it, so
+     * this waits to answer whether it went, as the node's own announce does. */
+    const int64_t deadline = esp_timer_get_time() + kAnnounceWaitUs;
+    while (esp_timer_get_time() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        Guard guard;
+        if (!in->in_use || in->id != id || !in->listening) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (in->announces_done != before) {
+            return in->announce_result;
+        }
+    }
+    return ESP_ERR_TIMEOUT;
 }

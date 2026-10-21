@@ -139,7 +139,7 @@ esp_err_t identity_read(RNS::Bytes &private_key)
 {
     solar_os_credential_info_t record = {};
     esp_err_t error = solar_os_credentials_find(
-        SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
+        solar_os_reticulum_instance(),
         SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY,
         kIdentityLabel,
         &record);
@@ -166,7 +166,7 @@ esp_err_t identity_store(const RNS::Bytes &private_key, bool replace)
         return ESP_ERR_INVALID_SIZE;
     }
     return solar_os_credentials_put(
-        SOLAR_OS_MESSAGING_PROVIDER_RETICULUM,
+        solar_os_reticulum_instance(),
         SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY,
         kIdentityLabel,
         private_key.data(),
@@ -317,16 +317,23 @@ solar_os_messaging_provider_id_t solar_os_reticulum_instance(void)
     while (solar_os_messaging_provider_next(&cursor, &status)) {
         if (strcmp(status.class_name, "reticulum") == 0) {
             instance = cursor;
-            return instance;
+            break;
         }
     }
-    const uint32_t profile_version = 1U;
-    solar_os_messaging_provider_id_t created = 0;
-    if (solar_os_messaging_instance_create("reticulum", "reticulum",
-                                           &profile_version,
-                                           sizeof(profile_version),
-                                           &created) == ESP_OK) {
-        instance = created;
+    if (instance == 0) {
+        const uint32_t profile_version = 1U;
+        solar_os_messaging_provider_id_t created = 0;
+        if (solar_os_messaging_instance_create("reticulum", "reticulum",
+                                               &profile_version,
+                                               sizeof(profile_version),
+                                               &created) == ESP_OK) {
+            instance = created;
+        }
+    }
+    if (instance != 0) {
+        /* Not a chat provider: it holds the node identity, nothing else. */
+        (void)solar_os_messaging_provider_set_status(
+            instance, false, false, ESP_OK, "node identity");
     }
     return instance;
 }
@@ -490,6 +497,14 @@ esp_err_t solar_os_reticulum_start(const solar_os_reticulum_config_t *config)
             if (error != ESP_OK) {
                 return error;
             }
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+            /* A first start: give the node somewhere to receive messages. */
+            const esp_err_t lxmf_error = solar_os_lxmf_create_default();
+            if (lxmf_error != ESP_OK) {
+                SOLAR_OS_LOGW(TAG, "no LXMF instance: %s",
+                              esp_err_to_name(lxmf_error));
+            }
+#endif
         }
         destination = RNS::Destination(
             identity,

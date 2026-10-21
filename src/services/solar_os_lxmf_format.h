@@ -85,6 +85,13 @@ bool solar_os_lxmf_parse_announce(const uint8_t *data,
                                   char *name,
                                   size_t name_len);
 
+/*
+ * Writes a destination hash given as hexadecimal in its canonical form:
+ * 32 lowercase digits. Surrounding angle brackets, as Reticulum prints a
+ * hash, are accepted. False for anything else.
+ */
+bool solar_os_lxmf_normalize_hash(const char *text, char *out, size_t out_len);
+
 #ifdef __cplusplus
 }
 #endif

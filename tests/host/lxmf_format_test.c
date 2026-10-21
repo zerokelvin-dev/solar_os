@@ -205,12 +205,29 @@ static void test_announce(void)
     assert(!solar_os_lxmf_parse_announce(binary, sizeof(binary), name, sizeof(name)));
 }
 
+static void test_normalize_hash(void)
+{
+    char out[2U * SOLAR_OS_LXMF_HASH_LEN + 1U];
+    assert(solar_os_lxmf_normalize_hash("5C809A43C40E456F6FCF04F4B2909801", out, sizeof(out)));
+    assert(strcmp(out, "5c809a43c40e456f6fcf04f4b2909801") == 0);
+    assert(solar_os_lxmf_normalize_hash("<5c809a43c40e456f6fcf04f4b2909801>", out, sizeof(out)));
+    assert(strcmp(out, "5c809a43c40e456f6fcf04f4b2909801") == 0);
+    assert(!solar_os_lxmf_normalize_hash("5c809a43c40e456f6fcf04f4b290980", out, sizeof(out)));
+    assert(!solar_os_lxmf_normalize_hash("5c809a43c40e456f6fcf04f4b29098011", out, sizeof(out)));
+    assert(!solar_os_lxmf_normalize_hash("5c809a43c40e456f6fcf04f4b290980g", out, sizeof(out)));
+    assert(!solar_os_lxmf_normalize_hash("<5c809a43c40e456f6fcf04f4b2909801", out, sizeof(out)));
+    assert(!solar_os_lxmf_normalize_hash("#general", out, sizeof(out)));
+    assert(!solar_os_lxmf_normalize_hash(NULL, out, sizeof(out)));
+    assert(!solar_os_lxmf_normalize_hash("5c809a43c40e456f6fcf04f4b2909801", out, 32U));
+}
+
 int main(void)
 {
     test_pack();
     test_unpack();
     test_stamp();
     test_announce();
+    test_normalize_hash();
     printf("lxmf_format_test ok\n");
     return 0;
 }

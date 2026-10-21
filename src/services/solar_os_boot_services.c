@@ -8,6 +8,9 @@
 #if SOLAR_OS_PACKAGE_SERVICE_IRC
 #include "solar_os_irc.h"
 #endif
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+#include "solar_os_lxmf.h"
+#endif
 #include "solar_os_adc.h"
 #include "solar_os_adc_dpad.h"
 #include "solar_os_battery.h"
@@ -197,6 +200,11 @@ void solar_os_boot_services_init(uint32_t now_ms)
 #if SOLAR_OS_PACKAGE_SERVICE_IRC
     const esp_err_t irc_err = solar_os_irc_init();
     if (irc_err != ESP_OK) SOLAR_OS_LOGW(TAG, "IRC unavailable: %s", esp_err_to_name(irc_err));
+#endif
+
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    const esp_err_t lxmf_err = solar_os_lxmf_init();
+    if (lxmf_err != ESP_OK) SOLAR_OS_LOGW(TAG, "LXMF unavailable: %s", esp_err_to_name(lxmf_err));
 #endif
 
 #if SOLAR_OS_PACKAGE_SERVICE_LINK && SOLAR_OS_PACKAGE_SERVICE_MESSAGING

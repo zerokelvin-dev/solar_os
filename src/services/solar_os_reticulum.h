@@ -23,11 +23,11 @@ extern "C" {
 #define SOLAR_OS_RETICULUM_UPSTREAM_COMMIT \
     "40fa628809d57140180c1c833559ab96fec992c1"
 
-/* The Messaging instance that owns this node's identity record and its LXMF
- * conversations. The first call creates it on mounted storage; zero when
- * that fails. Instance IDs are allocated, so this is never a constant. */
+/* The Messaging instance, of class "reticulum", whose Credentials record
+ * holds this node's transport identity. It carries no conversations; each
+ * LXMF instance has an identity of its own. The first call creates it on
+ * mounted storage; zero when that fails. */
 solar_os_messaging_provider_id_t solar_os_reticulum_instance(void);
-#define SOLAR_OS_MESSAGING_PROVIDER_RETICULUM solar_os_reticulum_instance()
 
 typedef struct {
     char destination_hex[SOLAR_OS_RETICULUM_HASH_HEX_LEN];

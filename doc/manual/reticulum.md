@@ -89,23 +89,70 @@ caught exceptions.
 ## LXMF messaging
 
 LXMF messages appear in the ordinary SolarOS messaging surfaces: the `chat`
-app, `messages`, and the universal inbox, alongside MeshCore and gateway
-conversations. The provider is `reticulum`.
+app, `messages`, and the universal inbox, alongside IRC, MeshCore and gateway
+conversations. LXMF is a messaging class, `lxmf`, set up the way IRC servers
+are: each instance is an identity of its own, with its own delivery address,
+display name, conversations, and joined groups. Up to four run at once.
 
 ```text
-reticulum lxmf status
-reticulum lxmf announce
-reticulum lxmf open DESTINATION_HEX
+reticulum lxmf status [INSTANCE]
+reticulum lxmf announce [INSTANCE]
+messages add lxmf NAME [DISPLAY_NAME]
+messages query NAME DESTINATION_HEX
+messages join NAME GROUP_HEX
+messages leave CONVERSATION_ID
+messages configure NAME "Display name"
+messages configure NAME hostname
+messages disconnect NAME
+messages connect NAME
+messages remove NAME
 messages send CONVERSATION_ID TEXT
 ```
 
+The first start, when the node identity is made, also creates an instance
+named `lxmf`, enabled, announcing the device hostname. `messages add lxmf`
+creates another; its identity is generated the first time it listens and
+kept as that instance's Credentials record. Each instance announces its own
+`lxmf.delivery` destination, so a peer sees each as a separate address.
+Profiles are saved in `.chat/profiles` with every other instance's.
+
+The node's own identity, the one `reticulum identity` shows and
+`solaros.node` announces, is separate. It belongs to an instance named
+`reticulum` that carries no conversations, so removing an LXMF instance
+never changes the node.
+
+Chat takes the same commands: `/add lxmf NAME`, `/query NAME DESTINATION_HEX`,
+`/join NAME GROUP_HEX`, `/leave`, `/configure`, `/connect`, `/disconnect`
+and `/remove`. `messages leave` takes the conversation number from
+`messages conversations`; Chat's `/leave` leaves the open conversation.
+Hashes are 32 hexadecimal digits, with or without the angle brackets
+Reticulum prints around them. `reticulum lxmf open DESTINATION_HEX` is
+`messages query` on the first LXMF instance.
+
+`disconnect` saves the instance as disabled: the job keeps running for
+other instances and other nodes' traffic, but that instance's
+`lxmf.delivery` destination is withdrawn, so it announces, receives and
+sends nothing until `connect`. Its queued messages wait. `remove` withdraws
+the destination, then deletes the instance's history and identity; the
+same name added again is a new address.
+
 A peer becomes reachable once its `lxmf.delivery` announce has been heard,
 which records it as a discovered contact under its announced display name.
-`reticulum lxmf open` starts a conversation with a peer named by the hash of
-its delivery destination, whether or not it has announced; SolarOS then
-requests a path and sends once one arrives.
+`messages query` starts a conversation with a peer named by the hash of its
+delivery destination, whether or not it has announced; SolarOS then requests
+a path and sends once one arrives.
 
-The display name SolarOS announces is the device hostname.
+### Groups
+
+LXMF has no group chat of its own; a group is a group-server peer, an LXMF
+destination that relays what it is sent to its members. `messages join`
+makes such a peer a room: its messages are shown as the room's, what is sent
+there goes to the server, and the room is kept across restarts, up to eight
+of them. Whether the server counts this node as a member is its own rule;
+many want a join command sent to them as an ordinary message first. A room's
+messages are signed by the server, so its members' names are the server's
+word: they are marked sender-unverified. `messages leave` stops treating the
+peer as a group; its history stays.
 
 Sending is direct: SolarOS opens a link to the peer and sends the message
 over it, signed with the node identity. A message that fits one link packet,
@@ -153,6 +200,7 @@ announced is refused rather than shown unverified.
 - One TCP interface and one LoRa radio; no serial or local-network interfaces yet.
 - No transport (forwarding) mode.
 - LXMF sends and receives directly, up to 64 KB a message; no propagation nodes, attachments, or compressed resources.
+- Up to four LXMF instances, each with its own identity; groups are group-server peers.
 - The link MTU stays at the Reticulum default of 500 bytes.
 
 ## Quick reference
@@ -165,9 +213,12 @@ reticulum identity import <private-key-hex>
 reticulum identity export --private
 reticulum announce
 reticulum announces
-reticulum lxmf status
-reticulum lxmf announce
+reticulum lxmf status [instance]
+reticulum lxmf announce [instance]
 reticulum lxmf open <destination-hex>
+messages add lxmf <name> [display-name]
+messages query <instance> <destination-hex>
+messages join <instance> <group-hex>
 job start reticulum <host> [port]
 job start reticulum lora <radio> <profile>
 job start reticulum <host> [port] lora <radio> <profile>

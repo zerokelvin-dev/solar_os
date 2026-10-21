@@ -7,6 +7,7 @@
 #include "solar_os_reticulum.h"
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
 #include "solar_os_lxmf.h"
+#include "solar_os_messaging.h"
 #endif
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
@@ -30,8 +31,8 @@ static void reticulum_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "  reticulum announce");
     solar_os_shell_io_writeln(io, "  reticulum announces");
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
-    solar_os_shell_io_writeln(io, "  reticulum lxmf status");
-    solar_os_shell_io_writeln(io, "  reticulum lxmf announce");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf status [instance]");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf announce [instance]");
     solar_os_shell_io_writeln(io, "  reticulum lxmf open <destination-hex>");
 #endif
     solar_os_shell_io_writeln(
@@ -176,48 +177,72 @@ static void reticulum_announces(solar_os_shell_io_t *io)
 }
 
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
-static bool reticulum_lxmf(solar_os_shell_io_t *io, int argc, char **argv)
+/* Each LXMF instance, or only the one named; false when the name is not one. */
+static bool reticulum_lxmf_next(const char *only, solar_os_messaging_provider_id_t *cursor,
+                                solar_os_messaging_provider_status_t *status)
 {
-    if (argc == 3 && strcmp(argv[2], "status") == 0) {
-        solar_os_lxmf_status_t status;
-        if (solar_os_lxmf_get_status(&status) != ESP_OK) {
-            reticulum_error(io, "lxmf status", ESP_FAIL);
+    while (solar_os_messaging_provider_next(cursor, status)) {
+        if (strcmp(status->class_name, SOLAR_OS_LXMF_CLASS) == 0 &&
+            (only == NULL || strcmp(status->name, only) == 0)) {
             return true;
         }
-        solar_os_shell_io_printf(io,
-                                 "Delivery: %s\n",
-                                 status.attached ? status.destination_hex :
-                                     "offline");
-        solar_os_shell_io_printf(io, "Name: %s\n", status.display_name);
-        solar_os_shell_io_printf(io,
-                                 "Peers: %lu\n",
-                                 (unsigned long)status.peers);
-        solar_os_shell_io_printf(io,
-                                 "Links: %lu\n",
-                                 (unsigned long)status.links);
-        solar_os_shell_io_printf(io,
-                                 "Received: %lu (%lu rejected)\n",
-                                 (unsigned long)status.received,
-                                 (unsigned long)status.rejected);
-        solar_os_shell_io_printf(io,
-                                 "Sent: %lu (%lu delivered, %lu failed)\n",
-                                 (unsigned long)status.sent,
-                                 (unsigned long)status.delivered,
-                                 (unsigned long)status.failed);
-        solar_os_shell_io_printf(io,
-                                 "Announces sent: %lu\n",
-                                 (unsigned long)status.announces_sent);
-        return true;
     }
-    if (argc == 3 && strcmp(argv[2], "announce") == 0) {
-        const esp_err_t error = solar_os_lxmf_announce();
-        if (error == ESP_ERR_INVALID_STATE) {
-            solar_os_shell_io_writeln(
-                io, "reticulum lxmf: start it with: job start reticulum <host> [port]");
-        } else if (error != ESP_OK) {
-            reticulum_error(io, "lxmf announce", error);
-        } else {
-            solar_os_shell_io_writeln(io, "LXMF announce sent");
+    return false;
+}
+
+static void reticulum_lxmf_status(solar_os_shell_io_t *io,
+                                  const solar_os_messaging_provider_status_t *instance)
+{
+    solar_os_lxmf_status_t status;
+    if (solar_os_lxmf_get_status(instance->id, &status) != ESP_OK) {
+        solar_os_shell_io_printf(io, "%s: unavailable\n", instance->name);
+        return;
+    }
+    solar_os_shell_io_printf(io, "%s\n", instance->name);
+    solar_os_shell_io_printf(io, "  Delivery: %s\n",
+                             status.attached ? status.destination_hex : "offline");
+    solar_os_shell_io_printf(io, "  Name: %s\n", status.display_name);
+    solar_os_shell_io_printf(io, "  Peers: %lu\n", (unsigned long)status.peers);
+    solar_os_shell_io_printf(io, "  Links: %lu\n", (unsigned long)status.links);
+    solar_os_shell_io_printf(io, "  Received: %lu (%lu rejected)\n",
+                             (unsigned long)status.received,
+                             (unsigned long)status.rejected);
+    solar_os_shell_io_printf(io, "  Sent: %lu (%lu delivered, %lu failed)\n",
+                             (unsigned long)status.sent,
+                             (unsigned long)status.delivered,
+                             (unsigned long)status.failed);
+    solar_os_shell_io_printf(io, "  Announces sent: %lu\n",
+                             (unsigned long)status.announces_sent);
+}
+
+static bool reticulum_lxmf(solar_os_shell_io_t *io, int argc, char **argv)
+{
+    if ((argc == 3 || argc == 4) &&
+        (strcmp(argv[2], "status") == 0 || strcmp(argv[2], "announce") == 0)) {
+        const char *only = argc == 4 ? argv[3] : NULL;
+        const bool announce = strcmp(argv[2], "announce") == 0;
+        solar_os_messaging_provider_id_t cursor = 0;
+        solar_os_messaging_provider_status_t instance;
+        bool any = false;
+        while (reticulum_lxmf_next(only, &cursor, &instance)) {
+            any = true;
+            if (!announce) {
+                reticulum_lxmf_status(io, &instance);
+                continue;
+            }
+            const esp_err_t error = solar_os_lxmf_announce(instance.id);
+            if (error == ESP_ERR_INVALID_STATE) {
+                solar_os_shell_io_printf(io, "%s: offline; start it with: job start reticulum <host> [port],"
+                                         " and messages connect %s\n", instance.name, instance.name);
+            } else if (error != ESP_OK) {
+                solar_os_shell_io_printf(io, "%s: %s\n", instance.name, solar_os_shell_error_text(error));
+            } else {
+                solar_os_shell_io_printf(io, "%s: LXMF announce sent\n", instance.name);
+            }
+        }
+        if (!any) {
+            solar_os_shell_io_writeln(io, only ? "reticulum lxmf: no such LXMF instance" :
+                "reticulum lxmf: no LXMF instance; add one with: messages add lxmf <name> [display-name]");
         }
         return true;
     }
