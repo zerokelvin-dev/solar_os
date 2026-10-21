@@ -155,10 +155,11 @@ word: they are marked sender-unverified. `messages leave` stops treating the
 peer as a group; its history stays.
 
 Sending is direct: SolarOS opens a link to the peer and sends the message
-over it, signed with the node identity. A message that fits one link packet,
-about 330 bytes, goes as a packet and shows as delivered once the peer's
-proof comes back. A longer one goes as a resource, in as many packets as it
-takes, and shows as delivered once the peer has confirmed the whole of it.
+over it, signed with the identity of the instance sending it. A message
+that fits one link packet, about 330 bytes, goes as a packet and shows as
+delivered once the peer's proof comes back. A longer one goes as a resource,
+in as many packets as it takes, and shows as delivered once the peer has
+confirmed the whole of it.
 The link is kept for the next message to the same peer and closed after ten
 minutes without use.
 
