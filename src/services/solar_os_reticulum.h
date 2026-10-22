@@ -95,6 +95,9 @@ esp_err_t solar_os_reticulum_identity_export_private(
     char private_key_hex[SOLAR_OS_RETICULUM_PRIVATE_KEY_HEX_LEN]);
 
 esp_err_t solar_os_reticulum_start(const solar_os_reticulum_config_t *config);
+/* Why the last start failed, when there is more to say than its error;
+ * empty otherwise. */
+void solar_os_reticulum_start_error(char *buffer, size_t buffer_len);
 esp_err_t solar_os_reticulum_stop(void);
 void solar_os_reticulum_loop_once(void);
 void solar_os_reticulum_note_stack_watermark(uint32_t bytes);

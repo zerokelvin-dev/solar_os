@@ -44,6 +44,8 @@ typedef struct {
     uint32_t failed;
     uint32_t announces_sent;
     esp_err_t last_error;
+    /* Not ESP_OK when the instance's identity could not be loaded. */
+    esp_err_t identity_error;
 } solar_os_lxmf_status_t;
 
 /* Registers the lxmf messaging class and restores its saved instances. */
@@ -60,6 +62,12 @@ esp_err_t solar_os_lxmf_get_status(solar_os_messaging_provider_id_t id,
 /* Announces the instance's delivery destination and waits for the worker
  * to say whether it went. */
 esp_err_t solar_os_lxmf_announce(solar_os_messaging_provider_id_t id);
+
+/* Makes a new identity for an instance whose own is missing or unreadable,
+ * or with force, replaces it, giving the instance a new address. Refused
+ * while the instance is listening. */
+esp_err_t solar_os_lxmf_identity_generate(solar_os_messaging_provider_id_t id,
+                                         bool force);
 
 /* Opens a conversation with a peer named by its delivery destination hash;
  * messages query on the first LXMF instance. */

@@ -57,6 +57,9 @@ bool initialized = false;
 bool running = false;
 bool instance_created = false;
 bool identity_set = false;
+/* The node identity was made this boot, with the instance that holds it. */
+bool identity_new = false;
+char start_error[128] = {};
 bool interface_was_online = false;
 solar_os_reticulum_status_t counters = {};
 char host[SOLAR_OS_RETICULUM_HOST_MAX + 1U] = {};
@@ -328,6 +331,15 @@ solar_os_messaging_provider_id_t solar_os_reticulum_instance(void)
                                                sizeof(profile_version),
                                                &created) == ESP_OK) {
             instance = created;
+            /* The identity is made with its instance and only then, so one
+             * that goes missing later is reported rather than replaced. */
+            try {
+                RNS::Identity fresh;
+                if (identity_store(fresh.get_private_key(), false) == ESP_OK) {
+                    identity_new = true;
+                }
+            } catch (const std::exception &) {
+            }
         }
     }
     if (instance != 0) {
@@ -454,6 +466,13 @@ esp_err_t solar_os_reticulum_identity_export_private(
     return ESP_OK;
 }
 
+void solar_os_reticulum_start_error(char *buffer, size_t buffer_len)
+{
+    if (buffer != nullptr && buffer_len > 0U) {
+        strlcpy(buffer, start_error, buffer_len);
+    }
+}
+
 esp_err_t solar_os_reticulum_start(const solar_os_reticulum_config_t *config)
 {
     esp_err_t error = solar_os_reticulum_init();
@@ -487,16 +506,18 @@ esp_err_t solar_os_reticulum_start(const solar_os_reticulum_config_t *config)
                 return error;
             }
         }
-        if (identity_load_locked() != ESP_OK) {
-            RNS::Identity fresh;
-            error = identity_store(fresh.get_private_key(), false);
-            if (error != ESP_OK) {
-                return error;
-            }
-            error = identity_load_locked();
-            if (error != ESP_OK) {
-                return error;
-            }
+        error = identity_load_locked();
+        if (error != ESP_OK) {
+            snprintf(start_error, sizeof(start_error),
+                     "node identity not in %s; restore it, or: "
+                     "reticulum identity generate",
+                     solar_os_credentials_location());
+            SOLAR_OS_LOGE(TAG, "%s (%s)", start_error, esp_err_to_name(error));
+            return error;
+        }
+        start_error[0] = '\0';
+        if (identity_new) {
+            identity_new = false;
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
             /* A first start: give the node somewhere to receive messages. */
             const esp_err_t lxmf_error = solar_os_lxmf_create_default();

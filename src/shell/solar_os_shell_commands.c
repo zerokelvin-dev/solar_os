@@ -1904,8 +1904,15 @@ void solar_os_shell_cmd_job(solar_os_context_t *ctx, int argc, char **argv)
             return;
         } else if (err == ESP_ERR_NOT_FOUND) {
             solar_os_job_status_t status;
+            char error_detail[SOLAR_OS_JOB_ERROR_DETAIL_MAX];
             if (!solar_os_jobs_get_by_name(argv[2], &status)) {
                 solar_os_shell_io_printf(term, "job: not found: %s\n", argv[2]);
+            } else if (solar_os_jobs_get_error_detail(argv[2],
+                                                      error_detail,
+                                                      sizeof(error_detail))) {
+                solar_os_shell_io_printf(term,
+                                         "job start failed: %s\n",
+                                         error_detail);
             } else {
                 solar_os_shell_io_printf(term,
                                          "job start failed: not found\n");

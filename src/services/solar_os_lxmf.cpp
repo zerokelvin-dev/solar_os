@@ -95,6 +95,9 @@ struct Instance {
     uint32_t announces_done;
     esp_err_t announce_result;
     bool listening;
+    /* Why the identity could not be loaded; the worker waits on it until
+     * a new one is made rather than retrying. */
+    esp_err_t identity_error;
     char destination_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
     solar_os_lxmf_status_t counters;
     /* Worker thread only. */
@@ -860,23 +863,27 @@ void start_next(Instance &in)
     process_outbound(in);
 }
 
-/* This instance's own identity, made and kept on first use. */
-esp_err_t load_identity(Instance &in)
+/* Stores a new identity for the instance; replace says whether one there
+ * already may be overwritten. */
+esp_err_t make_identity(solar_os_messaging_provider_id_t id, bool replace)
+{
+    try {
+        RNS::Identity fresh;
+        return solar_os_credentials_put(
+            id, SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY, kIdentityLabel,
+            fresh.get_private_key().data(), fresh.get_private_key().size(),
+            replace, nullptr);
+    } catch (const std::exception &) {
+        return ESP_FAIL;
+    }
+}
+
+/* An instance's own identity, made when the instance was. */
+esp_err_t read_identity(solar_os_messaging_provider_id_t id, RNS::Identity &out)
 {
     solar_os_credential_info_t record = {};
     esp_err_t error = solar_os_credentials_find(
-        in.id, SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY, kIdentityLabel, &record);
-    if (error == ESP_ERR_NOT_FOUND) {
-        RNS::Identity fresh;
-        error = solar_os_credentials_put(
-            in.id, SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY, kIdentityLabel,
-            fresh.get_private_key().data(), fresh.get_private_key().size(),
-            false, nullptr);
-        if (error == ESP_OK) {
-            in.identity = fresh;
-        }
-        return error;
-    }
+        id, SOLAR_OS_CREDENTIAL_ASYMMETRIC_IDENTITY, kIdentityLabel, &record);
     if (error != ESP_OK) {
         return error;
     }
@@ -890,7 +897,7 @@ esp_err_t load_identity(Instance &in)
     if (error == ESP_OK) {
         RNS::Identity loaded(false);
         if (loaded.load_private_key(RNS::Bytes(secret, sizeof(secret)))) {
-            in.identity = loaded;
+            out = loaded;
         } else {
             error = ESP_ERR_INVALID_STATE;
         }
@@ -913,11 +920,21 @@ bool any_listening()
 esp_err_t listen(Instance &in)
 {
     if (!in.identity) {
-        const esp_err_t error = load_identity(in);
+        const esp_err_t error = read_identity(in.id, in.identity);
         if (error != ESP_OK) {
-            SOLAR_OS_LOGE(TAG, "no identity: %s", esp_err_to_name(error));
+            solar_os_messaging_provider_status_t status = {};
+            (void)solar_os_messaging_provider_get_status(in.id, &status);
+            const char *name = status.name;
+            SOLAR_OS_LOGE(TAG, "%s: identity not in %s (%s)", name,
+                          solar_os_credentials_location(),
+                          esp_err_to_name(error));
+            SOLAR_OS_LOGE(TAG, "%s: restore that file, or: "
+                          "reticulum lxmf identity generate %s", name, name);
             (void)solar_os_messaging_provider_set_status(
-                in.id, false, false, error, "identity unavailable");
+                in.id, false, false, error,
+                "identity missing; see: reticulum lxmf status");
+            Guard guard;
+            in.identity_error = error;
             return error;
         }
     }
@@ -975,6 +992,8 @@ void stop_listening(Instance &in, const char *detail)
         SOLAR_OS_LOGE(TAG, "detach failed: %s", failure.what());
     }
     in.inbound = RNS::Destination({RNS::Type::NONE});
+    /* Read again on the next listen, in case it has been replaced. */
+    in.identity = RNS::Identity({RNS::Type::NONE});
     {
         Guard guard;
         in.listening = false;
@@ -1033,6 +1052,12 @@ void tick_instance(Instance &in)
     /* Connect, disconnect and removal only change the profile; the worker
      * owns the destination and follows it here. */
     if (want && !in.inbound) {
+        {
+            Guard guard;
+            if (in.identity_error != ESP_OK) {
+                return;
+            }
+        }
         if (listen(in) != ESP_OK) {
             return;
         }
@@ -1232,6 +1257,7 @@ esp_err_t attach_instance(solar_os_messaging_provider_id_t id,
         in->config = config;
         in->removing = false;
         in->listening = false;
+        in->identity_error = ESP_OK;
         in->announce_requested = false;
         in->announces_done = 0U;
         in->announce_result = ESP_OK;
@@ -1295,9 +1321,17 @@ esp_err_t create_instance(const char *name, const char *display,
     solar_os_messaging_provider_id_t created = 0;
     esp_err_t error = solar_os_messaging_instance_create(
         SOLAR_OS_LXMF_CLASS, name, &config, sizeof(config), &created);
-    if (error == ESP_OK) {
-        error = attach_instance(created, name, config);
+    if (error != ESP_OK) {
+        return error;
     }
+    /* The identity is made with the instance and only then, so one that
+     * goes missing later is reported rather than replaced. */
+    error = make_identity(created, false);
+    if (error != ESP_OK) {
+        (void)solar_os_messaging_instance_remove(created);
+        return error;
+    }
+    error = attach_instance(created, name, config);
     if (error == ESP_OK && id != nullptr) {
         *id = created;
     }
@@ -1612,6 +1646,37 @@ esp_err_t solar_os_lxmf_create_default(void)
     return create_instance(SOLAR_OS_LXMF_DEFAULT_INSTANCE, nullptr, nullptr);
 }
 
+esp_err_t solar_os_lxmf_identity_generate(solar_os_messaging_provider_id_t id,
+                                         bool force)
+{
+    if (solar_os_lxmf_init() != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    EditGuard edit;
+    Instance *in = nullptr;
+    {
+        Guard guard;
+        in = find_locked(id);
+        if (in == nullptr) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        /* The worker owns a destination made from the old one. */
+        if (in->listening) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    RNS::Identity existing{RNS::Type::NONE};
+    if (!force && read_identity(id, existing) == ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t error = make_identity(id, true);
+    if (error == ESP_OK) {
+        Guard guard;
+        in->identity_error = ESP_OK;
+    }
+    return error;
+}
+
 esp_err_t solar_os_lxmf_open(const char *destination_hex,
                              solar_os_conversation_id_t *conversation_id)
 {
@@ -1655,6 +1720,7 @@ esp_err_t solar_os_lxmf_get_status(solar_os_messaging_provider_id_t id,
     Guard guard;
     *status = in->counters;
     status->attached = in->listening;
+    status->identity_error = in->identity_error;
     strlcpy(status->display_name, name, sizeof(status->display_name));
     strlcpy(status->destination_hex, in->destination_hex,
             sizeof(status->destination_hex));

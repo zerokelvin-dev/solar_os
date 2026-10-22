@@ -146,10 +146,16 @@ static void reticulum_stop(solar_os_context_t *ctx)
     SOLAR_OS_LOGI(TAG, "job stopped");
 }
 
+static void reticulum_error_detail(char *buffer, size_t buffer_len)
+{
+    solar_os_reticulum_start_error(buffer, buffer_len);
+}
+
 const solar_os_job_t solar_os_reticulum_job = {
     .name = "reticulum",
     .summary = "Reticulum network stack over TCP and LoRa",
     .start = reticulum_start,
     .stop = reticulum_stop,
+    .error_detail = reticulum_error_detail,
     .worker_stack_bytes = SOLAR_OS_RETICULUM_WORKER_STACK,
 };

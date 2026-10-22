@@ -66,18 +66,24 @@ there, and so does this.
 ## Identity and storage
 
 The first start generates an identity from the SolarOS RNG and stores its
-64-byte private key as an opaque Credentials record. Protocol state (known
-destinations and paths) is stored under `/sdcard/reticulum`.
+64-byte private key as an opaque Credentials record, in
+`.settings/credentials.bin` on the default storage volume. Protocol state
+(known destinations and paths) is stored under `/sdcard/reticulum`.
 
 ```text
 reticulum identity show
-reticulum identity generate --force
+reticulum identity generate [--force]
 reticulum identity import PRIVATE_KEY_HEX
 reticulum identity export --private
 ```
 
-Generating with `--force` or importing is rejected while the job runs. Private
-export prints a warning; treat the output as a password.
+An identity is made only once, with the instance that holds it. If it is
+later missing, because the credentials file was lost or the storage holding it
+did not mount, the job refuses to start and names the file it expected,
+rather than quietly becoming a new node with a new address. Restore the file,
+or accept a new identity with `reticulum identity generate`. Replacing one
+that works takes `--force`. Generating or importing is rejected while the job
+runs. Private export prints a warning; treat the output as a password.
 
 ## Destination
 
@@ -97,6 +103,7 @@ display name, conversations, and joined groups. Up to four run at once.
 ```text
 reticulum lxmf status [INSTANCE]
 reticulum lxmf announce [INSTANCE]
+reticulum lxmf identity generate INSTANCE [--force]
 messages add lxmf NAME [DISPLAY_NAME]
 messages query NAME DESTINATION_HEX
 messages join NAME GROUP_HEX
@@ -111,8 +118,11 @@ messages send CONVERSATION_ID TEXT
 
 The first start, when the node identity is made, also creates an instance
 named `lxmf`, enabled, announcing the device hostname. `messages add lxmf`
-creates another; its identity is generated the first time it listens and
-kept as that instance's Credentials record. Each instance announces its own
+creates another, with an identity generated then and kept as that
+instance's Credentials record. An instance whose identity has gone missing
+stays offline, and `reticulum lxmf status` says so and where it was expected;
+`reticulum lxmf identity generate NAME` gives it a new one, and a new address.
+Replacing a working identity takes `messages disconnect NAME` and `--force`. Each instance announces its own
 `lxmf.delivery` destination, so a peer sees each as a separate address.
 Profiles are saved in `.chat/profiles` with every other instance's.
 
@@ -217,6 +227,7 @@ reticulum announces
 reticulum lxmf status [instance]
 reticulum lxmf announce [instance]
 reticulum lxmf open <destination-hex>
+reticulum lxmf identity generate <instance> [--force]
 messages add lxmf <name> [display-name]
 messages query <instance> <destination-hex>
 messages join <instance> <group-hex>

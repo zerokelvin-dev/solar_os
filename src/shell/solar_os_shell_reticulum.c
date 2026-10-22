@@ -34,6 +34,7 @@ static void reticulum_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "  reticulum lxmf status [instance]");
     solar_os_shell_io_writeln(io, "  reticulum lxmf announce [instance]");
     solar_os_shell_io_writeln(io, "  reticulum lxmf open <destination-hex>");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf identity generate <instance> [--force]");
 #endif
     solar_os_shell_io_writeln(
         io, "start: job start reticulum <host> [port] [lora <radio> <profile>]");
@@ -119,6 +120,9 @@ static bool reticulum_identity(solar_os_shell_io_t *io, int argc, char **argv)
             solar_os_shell_io_printf(io, "%s\n", hash);
         } else {
             reticulum_error(io, "identity show", error);
+            solar_os_shell_io_printf(io, "Expected in %s. Restore that file, or make a new "
+                                     "identity with: reticulum identity generate\n",
+                                     solar_os_credentials_location());
         }
         return true;
     }
@@ -199,6 +203,13 @@ static void reticulum_lxmf_status(solar_os_shell_io_t *io,
         return;
     }
     solar_os_shell_io_printf(io, "%s\n", instance->name);
+    if (status.identity_error != ESP_OK) {
+        solar_os_shell_io_printf(io, "  Identity: unavailable (%s); expected in %s\n",
+                                 solar_os_shell_error_text(status.identity_error),
+                                 solar_os_credentials_location());
+        solar_os_shell_io_printf(io, "  Restore that file, or make a new identity with: "
+                                 "reticulum lxmf identity generate %s\n", instance->name);
+    }
     solar_os_shell_io_printf(io, "  Delivery: %s\n",
                              status.attached ? status.destination_hex : "offline");
     solar_os_shell_io_printf(io, "  Name: %s\n", status.display_name);
@@ -243,6 +254,28 @@ static bool reticulum_lxmf(solar_os_shell_io_t *io, int argc, char **argv)
         if (!any) {
             solar_os_shell_io_writeln(io, only ? "reticulum lxmf: no such LXMF instance" :
                 "reticulum lxmf: no LXMF instance; add one with: messages add lxmf <name> [display-name]");
+        }
+        return true;
+    }
+    if ((argc == 5 || argc == 6) && strcmp(argv[2], "identity") == 0 &&
+        strcmp(argv[3], "generate") == 0 &&
+        (argc == 5 || strcmp(argv[5], "--force") == 0)) {
+        solar_os_messaging_provider_id_t cursor = 0;
+        solar_os_messaging_provider_status_t instance;
+        if (!reticulum_lxmf_next(argv[4], &cursor, &instance)) {
+            solar_os_shell_io_writeln(io, "reticulum lxmf: no such LXMF instance");
+            return true;
+        }
+        const esp_err_t error = solar_os_lxmf_identity_generate(instance.id, argc == 6);
+        if (error == ESP_OK) {
+            solar_os_shell_io_printf(io, "%s: identity generated; its address has changed\n",
+                                     instance.name);
+        } else if (error == ESP_ERR_INVALID_STATE) {
+            solar_os_shell_io_printf(io, "%s: has a working identity, or is online; to replace it, "
+                                     "messages disconnect %s, then add --force\n",
+                                     instance.name, instance.name);
+        } else {
+            reticulum_error(io, "lxmf identity generate", error);
         }
         return true;
     }
