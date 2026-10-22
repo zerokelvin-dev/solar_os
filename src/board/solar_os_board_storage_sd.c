@@ -17,7 +17,7 @@
 
 static bool storage_power_configured;
 
-static esp_err_t storage_power_on(void)
+esp_err_t solar_os_board_storage_power_on(void)
 {
 #ifndef SOLAR_OS_BOARD_PIN_SD_POWER
     return ESP_OK;
@@ -93,7 +93,7 @@ static void storage_block_from_driver(solar_os_board_storage_block_t *out,
 
 esp_err_t solar_os_board_storage_init(void)
 {
-    const esp_err_t err = storage_power_on();
+    const esp_err_t err = solar_os_board_storage_power_on();
     if (err != ESP_OK) {
         return err;
     }
@@ -107,7 +107,7 @@ bool solar_os_board_storage_available(void)
 
 esp_err_t solar_os_board_storage_mount(void)
 {
-    const esp_err_t err = storage_power_on();
+    const esp_err_t err = solar_os_board_storage_power_on();
     if (err != ESP_OK) {
         return err;
     }
@@ -116,7 +116,7 @@ esp_err_t solar_os_board_storage_mount(void)
 
 esp_err_t solar_os_board_storage_mount_volume(const char *name, const char *mount_point)
 {
-    const esp_err_t err = storage_power_on();
+    const esp_err_t err = solar_os_board_storage_power_on();
     if (err != ESP_OK) {
         return err;
     }
@@ -135,7 +135,7 @@ esp_err_t solar_os_board_storage_unmount_volume(const char *target)
 
 esp_err_t solar_os_board_storage_format(const char *name)
 {
-    const esp_err_t err = storage_power_on();
+    const esp_err_t err = solar_os_board_storage_power_on();
     if (err != ESP_OK) {
         return err;
     }
@@ -159,7 +159,7 @@ const char *solar_os_board_storage_mount_point(void)
 
 esp_err_t solar_os_board_storage_rescan(void)
 {
-    const esp_err_t err = storage_power_on();
+    const esp_err_t err = solar_os_board_storage_power_on();
     if (err != ESP_OK) {
         return err;
     }
