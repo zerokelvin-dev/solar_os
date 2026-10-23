@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sd_card.h"
+#include "solar_os_board_storage.h"
 #include "solar_os_gpio_controller.h"
 
 typedef struct {
@@ -104,6 +105,12 @@ esp_err_t solar_os_sdspi_attach(const char *name,
                                    &power_line);
     if (ret != ESP_OK || !solar_os_expansion_find_spi_bus(spi_bus, &bus, NULL)) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    /* A board card can attach before storage initialization switches its rail. */
+    ret = solar_os_board_storage_power_on();
+    if (ret != ESP_OK) {
+        return ret;
     }
 
     if (power_control) {
