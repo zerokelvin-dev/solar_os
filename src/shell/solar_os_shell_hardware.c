@@ -213,6 +213,15 @@ static void disk_print_status(solar_os_shell_io_t *term)
     solar_os_storage_get_status(status, sizeof(status));
     solar_os_shell_io_printf(term, "Disk: %s\n", status);
     solar_os_shell_io_printf(term, "Mount: %s\n", solar_os_storage_mount_point());
+    if (!solar_os_storage_flash_is_mounted()) {
+        solar_os_storage_flash_get_status(status, sizeof(status));
+        solar_os_shell_io_printf(term, "Flash: %s\n", status);
+        if (solar_os_storage_flash_is_unrecognized()) {
+            solar_os_shell_io_writeln(term,
+                "Flash holds data SolarOS cannot read, often from the firmware the "
+                "board shipped with. To erase it: disk format flash --force");
+        }
+    }
 }
 
 static void disk_print_lsblk(solar_os_shell_io_t *term)

@@ -110,8 +110,10 @@ creates a whole-disk FAT filesystem; formatting `sd0pN` preserves the partition
 table and formats only that partition.
 
 SolarOS initializes erased internal storage on first use. If a non-empty
-volume fails to mount, it leaves the contents intact. Format it only when you
-can discard those contents.
+volume fails to mount, it leaves the contents intact, and `disk status` reports
+`Flash: unrecognized filesystem`. That usually means data left by the firmware
+the board shipped with, since uploading SolarOS does not erase the storage
+partition. Format it only when you can discard those contents.
 
 ## Inspect before writing
 
