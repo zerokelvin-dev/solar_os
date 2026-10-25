@@ -54,6 +54,20 @@ esp_err_t solar_os_crypto_sha256_start(solar_os_crypto_sha256_t *ctx)
     return ESP_OK;
 }
 
+esp_err_t solar_os_crypto_sha256_clone(solar_os_crypto_sha256_t *dst,
+                                       const solar_os_crypto_sha256_t *src)
+{
+    if (dst == NULL || src == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!src->started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    mbedtls_sha256_clone(&dst->ctx, &src->ctx);
+    dst->started = true;
+    return ESP_OK;
+}
+
 esp_err_t solar_os_crypto_sha256_update(solar_os_crypto_sha256_t *ctx,
                                         const void *data,
                                         size_t len)

@@ -21,7 +21,7 @@ can_twai_test: can_twai_test.c $(ROOT)/src/drivers/can_twai.c $(ROOT)/src/servic
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -Ican_stubs -Iepd_stubs -Iexpansion_stubs -I. -I$(ROOT)/src/drivers -I$(ROOT)/src/services $(filter %.c,$^) -o $@
 
 TARGETS += lr11xx_test lr11xx_service_test
-TARGETS += reticulum_hdlc_test lxmf_format_test reticulum_lora_frame_test
+TARGETS += reticulum_hdlc_test lxmf_format_test lxmf_stamp_test reticulum_lora_frame_test
 TARGETS += ble_service_test ble_multi_peer_test ble_nimble_test ble_hid_test ble_lua_bindings_test ble_server_test ble_coc_test
 TARGETS += input_action_match_test gesture_completion_test touch_gesture_test
 TARGETS += epd_ssd1685_test ssd1685_expansion_test
@@ -1156,6 +1156,13 @@ lxmf_format_test: lxmf_format_test.c \
 		lxmf_format_test.c \
 		$(ROOT)/src/services/solar_os_lxmf_format.c -o $@
 
+lxmf_stamp_test: lxmf_stamp_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.h
+	$(CC) $(CFLAGS) -Imodel_bundle_stubs -I. -I$(ROOT)/src/services \
+		lxmf_stamp_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.c -lcrypto -o $@
+
 reticulum_hdlc_test: reticulum_hdlc_test.c \
 		$(ROOT)/src/services/solar_os_reticulum_hdlc.c \
 		$(ROOT)/src/services/solar_os_reticulum_hdlc.h
@@ -1333,6 +1340,7 @@ test: $(TARGETS)
 	./meshcore_stream_codec_test
 	./meshcore_ble_protocol_test
 	./lxmf_format_test
+	./lxmf_stamp_test
 	./reticulum_hdlc_test
 	./reticulum_lora_frame_test
 	./link_repeater_test
