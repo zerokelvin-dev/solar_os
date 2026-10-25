@@ -41,11 +41,18 @@ typedef struct {
     uint32_t rejected;
     uint32_t sent;
     uint32_t delivered;
+    /* Taken by a propagation node to hold for the recipient. */
+    uint32_t propagated;
     uint32_t failed;
     uint32_t announces_sent;
     esp_err_t last_error;
     /* Not ESP_OK when the instance's identity could not be loaded. */
     esp_err_t identity_error;
+    /* The propagation node a message goes to when its recipient cannot be
+     * reached: the nearest active one heard. Empty when none has been. */
+    char propagation_node_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
+    uint8_t propagation_node_hops;
+    uint32_t propagation_stamp_cost;
 } solar_os_lxmf_status_t;
 
 /* Registers the lxmf messaging class and restores its saved instances. */
