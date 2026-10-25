@@ -34,6 +34,8 @@ class ReticulumProtocolTest(unittest.TestCase):
     def test_lxmf_format(self):
         build_and_run(self, "lxmf_format_test")
 
+    def test_lxmf_stamp(self):
+        build_and_run(self, "lxmf_stamp_test")
 
 
 class ReticulumJobTest(unittest.TestCase):
