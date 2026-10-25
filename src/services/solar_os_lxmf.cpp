@@ -222,6 +222,16 @@ void display_name(const Instance &in, char *out, size_t out_len)
     }
 }
 
+RNS::Bytes announce_data(const Instance &in)
+{
+    char name[SOLAR_OS_LXMF_NAME_MAX + 1U];
+    display_name(in, name, sizeof(name));
+    uint8_t app_data[SOLAR_OS_LXMF_ANNOUNCE_MAX];
+    const size_t length =
+        solar_os_lxmf_pack_announce(name, app_data, sizeof(app_data));
+    return length > 0U ? RNS::Bytes(app_data, length) : RNS::Bytes();
+}
+
 void hash_hex(const RNS::Bytes &hash, char *out, size_t out_len)
 {
     const std::string hex = hash.toHex();
@@ -951,6 +961,7 @@ esp_err_t listen(Instance &in)
         in.inbound.set_packet_callback(receive);
         in.inbound.set_link_established_callback(link_established);
         in.inbound.set_proof_strategy(RNS::Type::Destination::PROVE_ALL);
+        in.inbound.set_default_app_data(announce_data(in));
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "attach failed: %s", failure.what());
         in.inbound = RNS::Destination({RNS::Type::NONE});
@@ -1015,15 +1026,13 @@ void stop_listening(Instance &in, const char *detail)
 
 void announce(Instance &in)
 {
-    char name[SOLAR_OS_LXMF_NAME_MAX + 1U];
-    display_name(in, name, sizeof(name));
-    uint8_t app_data[SOLAR_OS_LXMF_ANNOUNCE_MAX];
-    const size_t length =
-        solar_os_lxmf_pack_announce(name, app_data, sizeof(app_data));
+    const RNS::Bytes app_data = announce_data(in);
     esp_err_t result = ESP_FAIL;
     try {
-        if (length > 0U) {
-            in.inbound.announce(RNS::Bytes(app_data, length));
+        if (!app_data.empty()) {
+            /* Path responses carry the default; keep it the latest name. */
+            in.inbound.set_default_app_data(app_data);
+            in.inbound.announce(app_data);
             result = ESP_OK;
         }
     } catch (const std::exception &failure) {

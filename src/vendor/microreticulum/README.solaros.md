@@ -7,7 +7,7 @@ Change the script or `patches/microreticulum/overlay/` and regenerate. The scrip
 
 | Tree | Revision |
 | --- | --- |
-| microReticulum | `86fc5e89158278b2382c65f5e438dc2681aef873` ([zerokelvin-dev fork](https://github.com/zerokelvin-dev/microReticulum) of 0.5.0) |
+| microReticulum | `6e0f337e1296bdfbec9ac56810820910e98f0604` ([zerokelvin-dev fork](https://github.com/zerokelvin-dev/microReticulum) of 0.5.0) |
 | microStore | `03290c10be52242dd53e78192b2bb632d408f774` ([zerokelvin-dev fork](https://github.com/zerokelvin-dev/microStore)) |
 | MsgPack | `1f552c31b940d6e9063ee17a4b3fa10c47b27169` |
 | ArxContainer | `d6affcd0bc83219b863c20abf7c269214db8db2a` |
@@ -24,9 +24,10 @@ microStore adapter except the POSIX one. See `EXCLUDED` in the script.
 
 microReticulum and microStore come from the zerokelvin-dev forks: upstream plus
 fixes that are open as upstream PRs
-([microReticulum #97–#102](https://github.com/attermann/microReticulum/pulls),
+([microReticulum #97, #99–#102](https://github.com/attermann/microReticulum/pulls) and #75,
 [microStore #12–#13](https://github.com/attermann/microStore/pulls)). Once they
-merge, the pins can move back to upstream.
+merge, the pins can move back to upstream. The microReticulum fork also adds
+`Destination::set_default_app_data()` (fork PR #7), not yet proposed upstream.
 
 The overlay replaces these files:
 
