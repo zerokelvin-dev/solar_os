@@ -116,6 +116,44 @@ size_t solar_os_lxmf_pack_propagation(double timestamp_s,
                                       uint8_t *out,
                                       size_t out_len);
 
+/* What identifies a message held by a propagation node: its SHA-256. */
+#define SOLAR_OS_LXMF_TRANSIENT_ID_LEN 32U
+/* Errors a propagation node answers "/get" with in place of a list. */
+#define SOLAR_OS_LXMF_SYNC_NO_IDENTITY 0xF0U
+#define SOLAR_OS_LXMF_SYNC_NO_ACCESS 0xF1U
+
+/*
+ * A "/get" request to a propagation node: [wants, haves], and the most the
+ * reply may carry when limit_kb is not zero. Each list is count transient
+ * IDs end to end, and a NULL list packs nil: both nil asks what the node
+ * holds, wants asks for those messages, and haves lets it delete them.
+ */
+size_t solar_os_lxmf_pack_sync_request(const uint8_t *wants,
+                                       size_t want_count,
+                                       const uint8_t *haves,
+                                       size_t have_count,
+                                       uint32_t limit_kb,
+                                       uint8_t *out,
+                                       size_t out_len);
+
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+} solar_os_lxmf_blob_t;
+
+/*
+ * Reads a propagation node's answer to "/get": a list of transient IDs, or
+ * of messages, borrowed from data. Fills up to max items and says how many
+ * there were. A number is an error, given in *error and with no items. False
+ * for anything else.
+ */
+bool solar_os_lxmf_parse_sync_response(const uint8_t *data,
+                                       size_t len,
+                                       solar_os_lxmf_blob_t *items,
+                                       size_t max,
+                                       size_t *count,
+                                       uint32_t *error);
+
 /*
  * Writes a destination hash given as hexadecimal in its canonical form:
  * 32 lowercase digits. Surrounding angle brackets, as Reticulum prints a
