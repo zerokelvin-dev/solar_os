@@ -1547,7 +1547,7 @@ test: $(TARGETS)
 
 clean:
 	$(RM) $(TARGETS) model_bundle_test inference_lua_json_test zoo_test
-	$(RM) -r reticulum_obj reticulum_service_test
+	$(RM) -r reticulum_obj reticulum_service_test lxmf_sync_test
 	$(RM) -r generated
 
 # ---------------------------------------------------------------------------
@@ -1856,9 +1856,24 @@ reticulum_service_test: reticulum_service_test.cpp $(RETICULUM_SERVICE_SRCS) \
 		reticulum_service_test.cpp $(RETICULUM_SERVICE_SRCS) \
 		$(RETICULUM_TEST_C_OBJS) $(RNS_LIB_OBJS) -lpthread -o $@
 
+# The LXMF service is included whole, so a test reaches its internals.
+LXMF_SYNC_C_SRCS := $(ROOT)/src/services/solar_os_lxmf_format.c
+LXMF_SYNC_C_OBJS := $(addprefix $(RNS_OBJ)/test/,$(notdir $(LXMF_SYNC_C_SRCS:.c=.o)))
+$(foreach s,$(LXMF_SYNC_C_SRCS),$(eval $(call RETICULUM_TEST_C_RULE,$(s))))
+
+lxmf_sync_test: lxmf_sync_test.cpp $(ROOT)/src/services/solar_os_lxmf.cpp \
+		$(LXMF_SYNC_C_OBJS) $(RNS_OBJ)/test/host_platform.o $(RNS_LIB_OBJS) \
+		$(wildcard $(ROOT)/src/services/solar_os_lxmf*.h)
+	@test -n "$(RETICULUM_MBEDTLS_DIR)" || { echo "set RETICULUM_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(RETICULUM_CXX) $(filter-out -std=%,$(CFLAGS)) -std=gnu++17 -Wno-deprecated-declarations \
+		-Wno-missing-field-initializers -Wno-extra $(RNS_DEFS) $(RNS_INC) \
+		lxmf_sync_test.cpp $(LXMF_SYNC_C_OBJS) $(RNS_OBJ)/test/host_platform.o \
+		$(RNS_LIB_OBJS) -lpthread -o $@
+
 .PHONY: reticulum-test
-reticulum-test: reticulum_job_test $(if $(RETICULUM_MBEDTLS_DIR),reticulum_service_test)
+reticulum-test: reticulum_job_test $(if $(RETICULUM_MBEDTLS_DIR),reticulum_service_test lxmf_sync_test)
 	./reticulum_job_test
 	$(if $(RETICULUM_MBEDTLS_DIR),./reticulum_service_test)
+	$(if $(RETICULUM_MBEDTLS_DIR),./lxmf_sync_test)
 
 test: reticulum-test
