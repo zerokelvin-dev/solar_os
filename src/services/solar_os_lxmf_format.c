@@ -449,6 +449,138 @@ bool solar_os_lxmf_parse_announce(const uint8_t *data,
     return copied > 0U;
 }
 
+static bool read_uint(reader_t *reader, uint64_t *value)
+{
+    uint8_t type = 0U;
+    if (!reader_byte(reader, &type)) {
+        return false;
+    }
+    if (type <= 0x7FU) {
+        *value = type;
+        return true;
+    }
+    size_t width = 0U;
+    switch (type) {
+    case 0xCCU: width = 1U; break;
+    case 0xCDU: width = 2U; break;
+    case MSGPACK_UINT32: width = 4U; break;
+    case MSGPACK_UINT64: width = 8U; break;
+    default: return false;
+    }
+    const uint8_t *bytes = NULL;
+    if (!reader_take(reader, width, &bytes)) {
+        return false;
+    }
+    *value = read_be(bytes, width);
+    return true;
+}
+
+static bool read_array(reader_t *reader, size_t *count)
+{
+    uint8_t type = 0U;
+    if (!reader_byte(reader, &type)) {
+        return false;
+    }
+    if ((type & 0xF0U) == 0x90U) {
+        *count = type & 0x0FU;
+        return true;
+    }
+    if (type == 0xDCU) {
+        return reader_count(reader, 2U, count);
+    }
+    if (type == 0xDDU) {
+        return reader_count(reader, 4U, count);
+    }
+    return false;
+}
+
+static bool read_limit(reader_t *reader, uint32_t *out)
+{
+    uint64_t value = 0U;
+    if (!read_uint(reader, &value)) {
+        return false;
+    }
+    *out = value > UINT32_MAX ? UINT32_MAX : (uint32_t)value;
+    return true;
+}
+
+bool solar_os_lxmf_parse_propagation_announce(
+    const uint8_t *data,
+    size_t len,
+    solar_os_lxmf_propagation_node_t *node)
+{
+    if (data == NULL || node == NULL || len == 0U) {
+        return false;
+    }
+    memset(node, 0, sizeof(*node));
+    reader_t reader = {.data = data, .len = len, .position = 0U};
+    size_t elements = 0U;
+    size_t costs = 0U;
+    uint64_t number = 0U;
+    uint8_t type = 0U;
+    uint32_t unused = 0U;
+    if (!read_array(&reader, &elements) || elements < 7U ||
+        !skip_value(&reader, 0U) ||               /* legacy flag */
+        !read_uint(&reader, &number) ||           /* timebase */
+        !reader_byte(&reader, &type) ||
+        (type != 0xC2U && type != 0xC3U) ||       /* active */
+        !read_limit(&reader, &node->transfer_limit_kb) ||
+        !read_limit(&reader, &unused) ||          /* sync limit */
+        !read_array(&reader, &costs) || costs < 3U ||
+        !read_limit(&reader, &node->stamp_cost) ||
+        !read_limit(&reader, &node->stamp_flexibility) ||
+        !read_limit(&reader, &unused)) {          /* peering cost */
+        memset(node, 0, sizeof(*node));
+        return false;
+    }
+    node->active = type == 0xC3U;
+    for (size_t index = 3U; index < costs; index++) {
+        if (!skip_value(&reader, 0U)) {
+            memset(node, 0, sizeof(*node));
+            return false;
+        }
+    }
+    /* Metadata, which must be a map. */
+    if (!reader_byte(&reader, &type) ||
+        !((type & 0xF0U) == 0x80U || type == 0xDEU || type == 0xDFU)) {
+        memset(node, 0, sizeof(*node));
+        return false;
+    }
+    return true;
+}
+
+size_t solar_os_lxmf_pack_propagation(double timestamp_s,
+                                      const uint8_t *message,
+                                      size_t message_len,
+                                      uint8_t *out,
+                                      size_t out_len)
+{
+    const size_t header = message_len < 256U ? 2U :
+                          (message_len < 65536U ? 3U : 5U);
+    if (out == NULL || message == NULL || message_len == 0U ||
+        out_len < 11U + header + message_len) {
+        return 0U;
+    }
+    out[0] = 0x92U;
+    out[1] = MSGPACK_FLOAT64;
+    uint64_t bits = 0U;
+    memcpy(&bits, &timestamp_s, sizeof(bits));
+    write_be(&out[2], bits, 8U);
+    out[10] = 0x91U;
+    if (message_len < 256U) {
+        out[11] = MSGPACK_BIN8;
+        out[12] = (uint8_t)message_len;
+    } else if (message_len < 65536U) {
+        out[11] = MSGPACK_BIN16;
+        write_be(&out[12], message_len, 2U);
+    } else {
+        out[11] = MSGPACK_BIN32;
+        write_be(&out[12], message_len, 4U);
+    }
+    memcpy(&out[11U + header], message, message_len);
+    return 11U + header + message_len;
+}
+
 bool solar_os_lxmf_normalize_hash(const char *text, char *out, size_t out_len)
 {
     if (text == NULL || out == NULL || out_len < 2U * SOLAR_OS_LXMF_HASH_LEN + 1U) {

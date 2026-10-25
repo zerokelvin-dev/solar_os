@@ -218,10 +218,20 @@ static void reticulum_lxmf_status(solar_os_shell_io_t *io,
     solar_os_shell_io_printf(io, "  Received: %lu (%lu rejected)\n",
                              (unsigned long)status.received,
                              (unsigned long)status.rejected);
-    solar_os_shell_io_printf(io, "  Sent: %lu (%lu delivered, %lu failed)\n",
+    solar_os_shell_io_printf(io, "  Sent: %lu (%lu delivered, %lu to a propagation node, %lu failed)\n",
                              (unsigned long)status.sent,
                              (unsigned long)status.delivered,
+                             (unsigned long)status.propagated,
                              (unsigned long)status.failed);
+    if (status.propagation_node_hex[0] != '\0') {
+        solar_os_shell_io_printf(io, "  Propagation node: %s (%u hop%s, stamp cost %lu)\n",
+                                 status.propagation_node_hex,
+                                 (unsigned)status.propagation_node_hops,
+                                 status.propagation_node_hops == 1U ? "" : "s",
+                                 (unsigned long)status.propagation_stamp_cost);
+    } else {
+        solar_os_shell_io_writeln(io, "  Propagation node: none heard");
+    }
     solar_os_shell_io_printf(io, "  Announces sent: %lu\n",
                              (unsigned long)status.announces_sent);
 }

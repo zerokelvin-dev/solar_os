@@ -188,19 +188,37 @@ sees the behaviour it would see from any other LXMF sender. Attempts are
 driven by whether Reticulum has a path rather than by a clock alone: a try
 without a path is followed by a path request, and a try with one opens a
 link. A link that does not carry the message is closed, and the next try
-opens another. Three tries, ten seconds apart. After them a message that fits
-a single packet of 255 bytes is sent opportunistically, without a link, which
-reaches a peer that can hear a packet and not hold a link; a longer one is
-marked failed.
+opens another. Three tries, ten seconds apart. After them the message goes to
+a propagation node, if one has been heard, to be held there until the
+recipient collects it. Without one, a message that fits a single packet of
+255 bytes is sent opportunistically, without a link, which reaches a peer
+that can hear a packet and not hold a link; a longer one is marked failed.
 
 A message queued while the job is stopped stays queued, and is sent when the
 job starts; it says the provider is not running rather than sitting at queued
 with no explanation. The outbox does not survive a restart: a message still
 queued or sending then is marked failed, as for every provider.
 
-There is no store-and-forward through a propagation node, and no
-attachments or stamps. A message to a peer that never becomes reachable
-fails rather than waiting for it.
+### Propagation nodes
+
+A propagation node holds messages for recipients that are away; on a
+Reticulum network it is usually `lxmd -p`. SolarOS uses the nearest active
+node it has heard announce, as `reticulum lxmf status` shows, and sends
+through it only after direct delivery has failed. The message is encrypted
+for its recipient, so the node cannot read it, and carries the proof-of-work
+stamp the node asks for in its announce; on an ESP32-S3 that takes about two
+seconds at a node's usual cost of 16. Once the node takes it the message is
+shown as sent: the node holds it, and only the recipient's client can say it
+arrived. A node that refuses the stamp, or cannot be reached in three tries,
+fails the message.
+
+Messages are only sent through a node. SolarOS does not yet collect messages
+a node holds for it, so a peer that sends to SolarOS through one reaches it
+only once SolarOS can be reached directly. A node is chosen only from its
+announce, which `lxmd` sends at start and every six hours by default.
+
+There are no attachments. A message to a peer that never becomes reachable,
+with no propagation node heard, fails rather than waiting for it.
 
 Inbound messages are dropped unless their signature verifies against an
 identity SolarOS already knows, so a message from a peer that has never
@@ -210,7 +228,7 @@ announced is refused rather than shown unverified.
 
 - One TCP interface and one LoRa radio; no serial or local-network interfaces yet.
 - No transport (forwarding) mode.
-- LXMF sends and receives directly, up to 64 KB a message; no propagation nodes, attachments, or compressed resources.
+- LXMF sends and receives directly, up to 64 KB a message, and sends through a propagation node; no collecting from one, attachments, or compressed resources.
 - Up to four LXMF instances, each with its own identity; groups are group-server peers.
 - The link MTU stays at the Reticulum default of 500 bytes.
 
