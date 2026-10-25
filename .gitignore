@@ -125,3 +125,4 @@ tests/host/reticulum_job_test
 tests/host/reticulum_service_test
 /tests/host/reticulum_obj/
 tests/host/lxmf_format_test
+tests/host/lxmf_stamp_test
