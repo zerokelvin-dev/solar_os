@@ -53,6 +53,11 @@ typedef struct {
     char propagation_node_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
     uint8_t propagation_node_hops;
     uint32_t propagation_stamp_cost;
+    /* Messages collected from the propagation node, and how the last
+     * collection went: "collecting", "done", or why not. Null before the
+     * first. */
+    uint32_t collected;
+    const char *sync;
 } solar_os_lxmf_status_t;
 
 /* Registers the lxmf messaging class and restores its saved instances. */
@@ -69,6 +74,11 @@ esp_err_t solar_os_lxmf_get_status(solar_os_messaging_provider_id_t id,
 /* Announces the instance's delivery destination and waits for the worker
  * to say whether it went. */
 esp_err_t solar_os_lxmf_announce(solar_os_messaging_provider_id_t id);
+
+/* Collects the messages the propagation node holds for the instance. This
+ * happens unasked every six hours; asking returns at once, and the status
+ * says how it went. */
+esp_err_t solar_os_lxmf_sync(solar_os_messaging_provider_id_t id);
 
 /* Makes a new identity for an instance whose own is missing or unreadable,
  * or with force, replaces it, giving the instance a new address. Refused
