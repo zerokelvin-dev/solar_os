@@ -581,6 +581,119 @@ size_t solar_os_lxmf_pack_propagation(double timestamp_s,
     return 11U + header + message_len;
 }
 
+static size_t pack_ids(uint8_t *out,
+                       size_t out_len,
+                       size_t position,
+                       const uint8_t *ids,
+                       size_t count)
+{
+    if (ids == NULL) {
+        if (position + 1U > out_len) {
+            return 0U;
+        }
+        out[position] = MSGPACK_NIL;
+        return position + 1U;
+    }
+    const size_t header = count < 16U ? 1U : 3U;
+    const size_t each = 2U + SOLAR_OS_LXMF_TRANSIENT_ID_LEN;
+    if (count > 0xFFFFU || position + header + count * each > out_len) {
+        return 0U;
+    }
+    if (count < 16U) {
+        out[position] = (uint8_t)(MSGPACK_FIXARRAY_0 | count);
+    } else {
+        out[position] = 0xDCU;
+        write_be(&out[position + 1U], count, 2U);
+    }
+    position += header;
+    for (size_t index = 0U; index < count; index++) {
+        out[position] = MSGPACK_BIN8;
+        out[position + 1U] = SOLAR_OS_LXMF_TRANSIENT_ID_LEN;
+        memcpy(&out[position + 2U], &ids[index * SOLAR_OS_LXMF_TRANSIENT_ID_LEN],
+               SOLAR_OS_LXMF_TRANSIENT_ID_LEN);
+        position += each;
+    }
+    return position;
+}
+
+size_t solar_os_lxmf_pack_sync_request(const uint8_t *wants,
+                                       size_t want_count,
+                                       const uint8_t *haves,
+                                       size_t have_count,
+                                       uint32_t limit_kb,
+                                       uint8_t *out,
+                                       size_t out_len)
+{
+    if (out == NULL || out_len == 0U) {
+        return 0U;
+    }
+    out[0] = limit_kb != 0U ? 0x93U : 0x92U;
+    size_t position = pack_ids(out, out_len, 1U, wants, want_count);
+    if (position != 0U) {
+        position = pack_ids(out, out_len, position, haves, have_count);
+    }
+    if (position == 0U || limit_kb == 0U) {
+        return position;
+    }
+    /* In its shortest form, as msgpack writes it. */
+    const size_t width = limit_kb < 0x80U ? 0U : limit_kb <= 0xFFU ? 1U :
+                         limit_kb <= 0xFFFFU ? 2U : 4U;
+    if (position + 1U + width > out_len) {
+        return 0U;
+    }
+    if (width == 0U) {
+        out[position] = (uint8_t)limit_kb;
+    } else {
+        out[position] = width == 1U ? 0xCCU : width == 2U ? 0xCDU : MSGPACK_UINT32;
+        write_be(&out[position + 1U], limit_kb, width);
+    }
+    return position + 1U + width;
+}
+
+bool solar_os_lxmf_parse_sync_response(const uint8_t *data,
+                                       size_t len,
+                                       solar_os_lxmf_blob_t *items,
+                                       size_t max,
+                                       size_t *count,
+                                       uint32_t *error)
+{
+    if (data == NULL || count == NULL || error == NULL || len == 0U ||
+        (items == NULL && max != 0U)) {
+        return false;
+    }
+    *count = 0U;
+    *error = 0U;
+    reader_t reader = {.data = data, .len = len, .position = 0U};
+    uint64_t number = 0U;
+    if (read_uint(&reader, &number)) {
+        *error = number > UINT32_MAX ? UINT32_MAX : (uint32_t)number;
+        return reader.position == len;
+    }
+    reader.position = 0U;
+    size_t elements = 0U;
+    if (!read_array(&reader, &elements)) {
+        return false;
+    }
+    for (size_t index = 0U; index < elements; index++) {
+        if (reader.position >= len) {
+            return false;
+        }
+        const uint8_t type = data[reader.position];
+        const uint8_t *bytes = NULL;
+        size_t length = 0U;
+        if ((type != MSGPACK_BIN8 && type != MSGPACK_BIN16 && type != MSGPACK_BIN32) ||
+            !read_blob(&reader, &bytes, &length)) {
+            return false;
+        }
+        if (index < max) {
+            items[index].data = bytes;
+            items[index].len = length;
+        }
+    }
+    *count = elements;
+    return reader.position == len;
+}
+
 bool solar_os_lxmf_normalize_hash(const char *text, char *out, size_t out_len)
 {
     if (text == NULL || out == NULL || out_len < 2U * SOLAR_OS_LXMF_HASH_LEN + 1U) {

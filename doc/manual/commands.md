@@ -1317,6 +1317,7 @@ available for the compiled board.
 | `reticulum` | `reticulum announces` | List announces heard from other Reticulum destinations. |
 | `reticulum` | `reticulum lxmf status [instance]` | Show each LXMF instance's delivery destination, peer count, and message counters. |
 | `reticulum` | `reticulum lxmf announce [instance]` | Announce each LXMF instance's delivery destination so peers can reach it. |
+| `reticulum` | `reticulum lxmf sync [instance]` | Collect the messages the propagation node holds for each LXMF instance. |
 | `reticulum` | `reticulum lxmf open <destination-hex>` | Start a conversation with a peer on the first LXMF instance; `messages query` names the instance. |
 | `radio` | `radio state <name> [sleep|standby|rx|tx]` | Show or change radio operating state. |
 | `radio` | `radio send <name> <text|byte...>` | Send one packet. |

@@ -66,6 +66,19 @@ constexpr size_t kMessageMax = 64U * 1024U;
  */
 constexpr uint32_t kStampSliceAttempts = 2048U;
 constexpr const char *kPropagationAspect = "propagation";
+/* How often messages are collected from the propagation node unasked, as
+ * NomadNet does by default. */
+constexpr int64_t kSyncIntervalUs = 6LL * 3600LL * 1000000LL;
+/* A collection that has not finished in this long is given up. */
+constexpr int64_t kSyncDeadlineUs = 15LL * 60LL * 1000000LL;
+/* Once, after a message was held back for a sender not yet heard of. */
+constexpr int64_t kSyncRecheckUs = 60LL * 1000000LL;
+/* Messages asked for in one request; any more wait for the next. */
+constexpr size_t kSyncBatch = 16U;
+/* The most the node may answer with: one message of the longest taken, and
+ * room for what it counts as framing. */
+constexpr uint32_t kSyncLimitKb = kMessageMax / 1000U + 1U;
+constexpr const char *kSyncPath = "/get";
 constexpr const char *kIdentityLabel = "identity";
 constexpr size_t kPrivateKeySize = 64U;
 
@@ -93,6 +106,31 @@ struct Pending {
     RNS::Bytes destination;
 };
 
+enum class SyncStep : uint8_t { idle, linking, listing, getting };
+
+/* Collecting what the propagation node holds for an instance, as the LXMF
+ * router does: ask what it holds, ask for those, then say which arrived so
+ * it can delete them. */
+struct Sync {
+    SyncStep step;
+    uint8_t tries;
+    int64_t next_try_us;
+    int64_t deadline_us;
+    /* When to collect again unasked. */
+    int64_t next_us;
+    /* The request an answer is awaited for. */
+    RNS::Bytes request;
+    size_t listed;
+    /* The node held more than it sent; collect again at once. */
+    bool more;
+    /* A message was left on the node for a sender not yet heard of, and
+     * whether to look again shortly, which happens once. */
+    bool held_back;
+    bool recheck;
+    bool rechecked;
+    int64_t recheck_us;
+};
+
 /*
  * One LXMF instance: an identity of its own, its delivery destination, and
  * the one message it is sending. Slots are allocated once and never freed,
@@ -114,6 +152,9 @@ struct Instance {
     esp_err_t identity_error;
     char destination_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
     solar_os_lxmf_status_t counters;
+    bool sync_requested;
+    /* How the last collection went; a string literal. */
+    const char *sync_result;
     /* Worker thread only. */
     RNS::Identity identity{RNS::Type::NONE};
     RNS::Destination inbound{RNS::Type::NONE};
@@ -133,6 +174,7 @@ struct Instance {
     bool stamp_open;
     uint8_t stamp_candidate[SOLAR_OS_LXMF_STAMP_SIZE];
     uint32_t stamp_cost;
+    Sync sync;
     int64_t last_process_us;
 };
 
@@ -405,12 +447,14 @@ void count_rejected(Instance &in)
     in.counters.rejected++;
 }
 
+enum class Received : uint8_t { taken, refused, sender_unknown };
+
 /* A message from its sender hash on: the recipient hash is implied. */
-void receive_message(Instance &in, const RNS::Bytes &data)
+Received receive_message(Instance &in, const RNS::Bytes &data)
 {
     if (data.size() <= kOverhead || data.size() > kMessageMax) {
         count_rejected(in);
-        return;
+        return Received::refused;
     }
     const RNS::Bytes source_hash = data.mid(0U, SOLAR_OS_LXMF_HASH_LEN);
     const RNS::Bytes signature =
@@ -422,14 +466,14 @@ void receive_message(Instance &in, const RNS::Bytes &data)
     if (!solar_os_lxmf_unpack_payload(payload_bytes, payload_len, &payload)) {
         count_rejected(in);
         SOLAR_OS_LOGW(TAG, "dropped a malformed message");
-        return;
+        return Received::refused;
     }
 
     RNS::Identity source = RNS::Identity::recall(source_hash);
     if (!source) {
         count_rejected(in);
         SOLAR_OS_LOGW(TAG, "dropped a message from an unannounced sender");
-        return;
+        return Received::sender_unknown;
     }
 
     /* The signature covers the payload without any stamp, which differs from
@@ -440,7 +484,7 @@ void receive_message(Instance &in, const RNS::Bytes &data)
         solar_os_lxmf_signed_payload(payload_bytes, &payload, signed_bytes,
                                      payload.signed_len) == 0U) {
         count_rejected(in);
-        return;
+        return Received::refused;
     }
     RNS::Bytes hashed_part(in.inbound.hash());
     hashed_part.append(source_hash);
@@ -450,7 +494,7 @@ void receive_message(Instance &in, const RNS::Bytes &data)
     if (!source.validate(signature, signed_part)) {
         count_rejected(in);
         SOLAR_OS_LOGW(TAG, "dropped a message with an invalid signature");
-        return;
+        return Received::refused;
     }
 
     char peer_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
@@ -513,11 +557,12 @@ void receive_message(Instance &in, const RNS::Bytes &data)
     if (error != ESP_OK) {
         in.counters.last_error = error;
         SOLAR_OS_LOGW(TAG, "message not stored: %s", esp_err_to_name(error));
-        return;
+        return Received::refused;
     }
     if (inserted) {
         in.counters.received++;
     }
+    return Received::taken;
 }
 
 /* An opportunistic packet leaves the recipient hash out, since it is the
@@ -526,7 +571,7 @@ void receive(const RNS::Bytes &data, const RNS::Packet &packet)
 {
     Instance *in = find_by_destination(packet.destination_hash());
     if (in != nullptr) {
-        receive_message(*in, data);
+        (void)receive_message(*in, data);
     }
 }
 
@@ -545,7 +590,7 @@ void receive_whole(const RNS::Bytes &data)
     if (in == nullptr) {
         return;
     }
-    receive_message(*in, data.mid(SOLAR_OS_LXMF_HASH_LEN));
+    (void)receive_message(*in, data.mid(SOLAR_OS_LXMF_HASH_LEN));
 }
 
 void receive_over_link(const RNS::Bytes &data, const RNS::Packet &)
@@ -1198,6 +1243,269 @@ void start_next(Instance &in)
     process_outbound(in);
 }
 
+void set_sync_result(Instance &in, const char *result)
+{
+    Guard guard;
+    in.sync_result = result;
+}
+
+/* Ends a collection; a null result is one that went as it should. */
+void finish_sync(Instance &in, const char *result)
+{
+    const bool more = result == nullptr && in.sync.more;
+    if (result == nullptr && in.sync.held_back && !in.sync.rechecked) {
+        in.sync.recheck = true;
+        in.sync.recheck_us = esp_timer_get_time() + kSyncRecheckUs;
+    }
+    in.sync.step = SyncStep::idle;
+    in.sync.request = RNS::Bytes();
+    Guard guard;
+    in.sync_result = result != nullptr ? result : "done";
+    if (more) {
+        in.sync_requested = true;
+    }
+}
+
+Instance *find_by_sync_request(const RNS::Bytes &request_id)
+{
+    for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
+        Instance &in = slots[i];
+        if (in.in_use && !in.removing && in.sync.request &&
+            in.sync.request == request_id) {
+            return &in;
+        }
+    }
+    return nullptr;
+}
+
+void sync_answered(const RNS::RequestReceipt &receipt);
+void sync_failed(const RNS::RequestReceipt &receipt);
+
+bool send_sync_request(Instance &in, const uint8_t *packed, size_t length)
+{
+    const RNS::RequestReceipt receipt = in.propagation_link.request(
+        RNS::Bytes(kSyncPath), RNS::Bytes(packed, length), sync_answered,
+        sync_failed);
+    if (!receipt) {
+        return false;
+    }
+    in.sync.request = receipt.request_id();
+    return true;
+}
+
+/* What the node holds: ask for it, smallest first, as it lists them. */
+void sync_listed(Instance &in, const solar_os_lxmf_blob_t *items, size_t count)
+{
+    in.sync.listed = count;
+    if (count == 0U) {
+        finish_sync(in, nullptr);
+        return;
+    }
+    uint8_t wants[kSyncBatch * SOLAR_OS_LXMF_TRANSIENT_ID_LEN];
+    size_t want_count = 0U;
+    for (size_t i = 0; i < count && i < kSyncBatch; i++) {
+        if (items[i].len == SOLAR_OS_LXMF_TRANSIENT_ID_LEN) {
+            memcpy(&wants[want_count * SOLAR_OS_LXMF_TRANSIENT_ID_LEN],
+                   items[i].data, SOLAR_OS_LXMF_TRANSIENT_ID_LEN);
+            want_count++;
+        }
+    }
+    uint8_t packed[sizeof(wants) + 16U];
+    const uint8_t none = 0U;
+    const size_t length = solar_os_lxmf_pack_sync_request(
+        wants, want_count, &none, 0U, kSyncLimitKb, packed, sizeof(packed));
+    if (length == 0U || !send_sync_request(in, packed, length)) {
+        finish_sync(in, "the request could not be sent");
+        return;
+    }
+    in.sync.step = SyncStep::getting;
+}
+
+/*
+ * The messages, as the node holds them: recipient hash, then encrypted for
+ * the recipient. Each that arrived is named back so the node deletes it,
+ * except one whose sender is not yet known here, which is left for the next
+ * collection while its announce is asked for.
+ */
+void sync_received(Instance &in, const solar_os_lxmf_blob_t *items, size_t count)
+{
+    uint8_t haves[kSyncBatch * SOLAR_OS_LXMF_TRANSIENT_ID_LEN];
+    size_t have_count = 0U;
+    uint32_t collected = 0U;
+    for (size_t i = 0; i < count && i < kSyncBatch; i++) {
+        const RNS::Bytes lxmf_data(items[i].data, items[i].len);
+        if (lxmf_data.size() > SOLAR_OS_LXMF_HASH_LEN &&
+            lxmf_data.mid(0U, SOLAR_OS_LXMF_HASH_LEN) == in.inbound.hash()) {
+            const RNS::Bytes plain =
+                in.inbound.decrypt(lxmf_data.mid(SOLAR_OS_LXMF_HASH_LEN));
+            const Received received =
+                plain ? receive_message(in, plain) : Received::refused;
+            if (received == Received::sender_unknown) {
+                RNS::Transport::request_path(plain.mid(0U, SOLAR_OS_LXMF_HASH_LEN));
+                in.sync.held_back = true;
+                continue;
+            }
+            if (received == Received::taken) {
+                collected++;
+            }
+        }
+        memcpy(&haves[have_count * SOLAR_OS_LXMF_TRANSIENT_ID_LEN],
+               RNS::Identity::full_hash(lxmf_data).data(),
+               SOLAR_OS_LXMF_TRANSIENT_ID_LEN);
+        have_count++;
+    }
+    in.sync.more = count > 0U && in.sync.listed > count;
+    {
+        Guard guard;
+        in.counters.collected += collected;
+    }
+    if (have_count > 0U) {
+        uint8_t packed[sizeof(haves) + 16U];
+        const size_t length = solar_os_lxmf_pack_sync_request(
+            nullptr, 0U, haves, have_count, 0U, packed, sizeof(packed));
+        /* Unanswered, as the LXMF router sends it: a node that missed it
+         * offers the same messages again, and they are taken once. */
+        if (length > 0U) {
+            (void)in.propagation_link.request(RNS::Bytes(kSyncPath),
+                                              RNS::Bytes(packed, length));
+        }
+    }
+    finish_sync(in, nullptr);
+}
+
+void sync_answered(const RNS::RequestReceipt &receipt)
+{
+    Instance *in = find_by_sync_request(receipt.request_id());
+    if (in == nullptr) {
+        return;
+    }
+    in->sync.request = RNS::Bytes();
+    const RNS::Bytes response = receipt.get_response();
+    solar_os_lxmf_blob_t items[kSyncBatch];
+    size_t count = 0U;
+    uint32_t error = 0U;
+    if (!solar_os_lxmf_parse_sync_response(response.data(), response.size(),
+                                           items, kSyncBatch, &count, &error)) {
+        finish_sync(*in, "the propagation node's answer was not understood");
+    } else if (error == SOLAR_OS_LXMF_SYNC_NO_IDENTITY) {
+        finish_sync(*in, "the propagation node did not learn who was asking");
+    } else if (error == SOLAR_OS_LXMF_SYNC_NO_ACCESS) {
+        finish_sync(*in, "the propagation node refused this identity");
+    } else if (error != 0U) {
+        finish_sync(*in, "the propagation node refused the request");
+    } else if (in->sync.step == SyncStep::listing) {
+        sync_listed(*in, items, count);
+    } else {
+        sync_received(*in, items, count);
+    }
+}
+
+/* No answer in time: ask again, on a new link if this one has gone. */
+void sync_failed(const RNS::RequestReceipt &receipt)
+{
+    Instance *in = find_by_sync_request(receipt.request_id());
+    if (in == nullptr) {
+        return;
+    }
+    in->sync.request = RNS::Bytes();
+    if (++in->sync.tries > kMaxDeliveryAttempts) {
+        finish_sync(*in, "the propagation node did not answer");
+        return;
+    }
+    in->sync.step = SyncStep::linking;
+}
+
+/*
+ * One step of collecting from the propagation node, on the outbound job's
+ * interval: unasked every so often, or when asked. The link is the one
+ * messages go to the node on, opened here if there is none.
+ */
+void process_sync(Instance &in)
+{
+    const int64_t now = esp_timer_get_time();
+    if (in.sync.step == SyncStep::idle) {
+        bool asked = false;
+        {
+            Guard guard;
+            asked = in.sync_requested;
+            in.sync_requested = false;
+        }
+        if (!propagation_node.destination) {
+            if (asked) {
+                set_sync_result(in, "no propagation node heard");
+            }
+            return;
+        }
+        const bool due = now >= in.sync.next_us;
+        const bool recheck = in.sync.recheck && now >= in.sync.recheck_us;
+        if (!asked && !due && !recheck) {
+            return;
+        }
+        if (asked || due) {
+            in.sync.next_us = now + kSyncIntervalUs;
+        }
+        in.sync.rechecked = recheck && !asked && !due;
+        in.sync.recheck = false;
+        in.sync.step = SyncStep::linking;
+        in.sync.tries = 0U;
+        in.sync.next_try_us = 0;
+        in.sync.deadline_us = now + kSyncDeadlineUs;
+        in.sync.listed = 0U;
+        in.sync.more = false;
+        in.sync.held_back = false;
+        set_sync_result(in, "collecting");
+    }
+    if (now > in.sync.deadline_us) {
+        finish_sync(in, "the propagation node did not answer in time");
+        return;
+    }
+    const bool link_up = in.propagation_link &&
+                         in.propagation_link.status() == RNS::Type::Link::ACTIVE;
+    if (in.sync.step != SyncStep::linking) {
+        if (link_up) {
+            return; /* awaiting the answer */
+        }
+        in.sync.request = RNS::Bytes();
+        in.sync.step = SyncStep::linking;
+    }
+    if (in.propagation_link && in.propagation_peer != propagation_node.destination) {
+        drop_propagation_link(in);
+    }
+    if (link_up) {
+        in.propagation_link.identify(in.identity);
+        uint8_t packed[8];
+        const size_t length = solar_os_lxmf_pack_sync_request(
+            nullptr, 0U, nullptr, 0U, 0U, packed, sizeof(packed));
+        if (send_sync_request(in, packed, length)) {
+            in.sync.step = SyncStep::listing;
+        }
+        return;
+    }
+    if (in.propagation_link) {
+        if (in.propagation_link.status() != RNS::Type::Link::CLOSED) {
+            return; /* still being established */
+        }
+        drop_propagation_link(in);
+    }
+    if (now <= in.sync.next_try_us) {
+        return;
+    }
+    if (in.sync.tries >= kMaxDeliveryAttempts) {
+        finish_sync(in, "no link to the propagation node");
+        return;
+    }
+    in.sync.tries++;
+    in.sync.next_try_us = now + kDeliveryRetryWaitUs;
+    RNS::Identity node = RNS::Identity::recall(propagation_node.destination);
+    if (!node || !RNS::Transport::has_path(propagation_node.destination)) {
+        RNS::Transport::request_path(propagation_node.destination);
+        in.sync.next_try_us = now + kPathRequestWaitUs;
+        return;
+    }
+    in.propagation_link = RNS::Link(propagation_destination(node), link_ready);
+    in.propagation_peer = propagation_node.destination;
+}
+
 /* Stores a new identity for the instance; replace says whether one there
  * already may be overwritten. */
 esp_err_t make_identity(solar_os_messaging_provider_id_t id, bool replace)
@@ -1299,6 +1607,7 @@ esp_err_t listen(Instance &in)
         return ESP_FAIL;
     }
     in.pending = Pending{};
+    in.sync = Sync{};
     {
         Guard guard;
         in.listening = true;
@@ -1328,6 +1637,7 @@ void stop_listening(Instance &in, const char *detail)
     drop_link(in);
     drop_propagation_link(in);
     end_stamp(in);
+    in.sync = Sync{};
     try {
         RNS::Transport::deregister_destination(in.inbound);
     } catch (const std::exception &failure) {
@@ -1436,12 +1746,14 @@ void tick_instance(Instance &in)
             if (!in.pending.active) {
                 start_next(in);
             }
+            process_sync(in);
             if (!in.pending.active && in.direct &&
                 (in.direct.status() == RNS::Type::Link::CLOSED ||
                  in.direct.no_data_for() > kLinkIdleSeconds)) {
                 drop_link(in);
             }
-            if (!in.pending.active && in.propagation_link &&
+            if (!in.pending.active && in.sync.step == SyncStep::idle &&
+                in.propagation_link &&
                 (in.propagation_link.status() == RNS::Type::Link::CLOSED ||
                  in.propagation_link.no_data_for() > kLinkIdleSeconds)) {
                 drop_propagation_link(in);
@@ -1619,6 +1931,8 @@ esp_err_t attach_instance(solar_os_messaging_provider_id_t id,
         in->announce_result = ESP_OK;
         in->destination_hex[0] = '\0';
         in->counters = solar_os_lxmf_status_t{};
+        in->sync_requested = false;
+        in->sync_result = nullptr;
         in->in_use = true;
     }
     /* Worker-owned, but the slot is not in use until now. */
@@ -2084,6 +2398,24 @@ esp_err_t solar_os_lxmf_get_status(solar_os_messaging_provider_id_t id,
             sizeof(status->propagation_node_hex));
     status->propagation_node_hops = propagation_status.hops;
     status->propagation_stamp_cost = propagation_status.stamp_cost;
+    status->sync = in->sync_result;
+    return ESP_OK;
+}
+
+esp_err_t solar_os_lxmf_sync(solar_os_messaging_provider_id_t id)
+{
+    if (solar_os_lxmf_init() != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    Guard guard;
+    Instance *in = find_locked(id);
+    if (in == nullptr) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (!in->listening) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    in->sync_requested = true;
     return ESP_OK;
 }
 

@@ -103,6 +103,7 @@ display name, conversations, and joined groups. Up to four run at once.
 ```text
 reticulum lxmf status [INSTANCE]
 reticulum lxmf announce [INSTANCE]
+reticulum lxmf sync [INSTANCE]
 reticulum lxmf identity generate INSTANCE [--force]
 messages add lxmf NAME [DISPLAY_NAME]
 messages query NAME DESTINATION_HEX
@@ -212,10 +213,17 @@ shown as sent: the node holds it, and only the recipient's client can say it
 arrived. A node that refuses the stamp, or cannot be reached in three tries,
 fails the message.
 
-Messages are only sent through a node. SolarOS does not yet collect messages
-a node holds for it, so a peer that sends to SolarOS through one reaches it
-only once SolarOS can be reached directly. A node is chosen only from its
-announce, which `lxmd` sends at start and every six hours by default.
+Each instance also collects what the node holds for it: once a node is
+heard, then every six hours, as NomadNet does by default, and whenever
+`reticulum lxmf sync` asks. It identifies to the node, asks what it holds,
+fetches up to sixteen messages at a time, and tells the node which arrived so
+it deletes them. A message whose sender SolarOS has not heard announce is
+left on the node while the sender's announce is asked for, and collection
+looks again a minute later. `reticulum lxmf status` counts what was collected
+and says how the last collection went.
+
+A node is chosen only from its announce, which `lxmd` sends at start and
+every six hours by default; its `announce_interval` sets that.
 
 There are no attachments. A message to a peer that never becomes reachable,
 with no propagation node heard, fails rather than waiting for it.
@@ -228,7 +236,7 @@ announced is refused rather than shown unverified.
 
 - One TCP interface and one LoRa radio; no serial or local-network interfaces yet.
 - No transport (forwarding) mode.
-- LXMF sends and receives directly, up to 64 KB a message, and sends through a propagation node; no collecting from one, attachments, or compressed resources.
+- LXMF sends and receives directly, up to 64 KB a message, and through a propagation node; no attachments or compressed resources.
 - Up to four LXMF instances, each with its own identity; groups are group-server peers.
 - The link MTU stays at the Reticulum default of 500 bytes.
 
@@ -244,6 +252,7 @@ reticulum announce
 reticulum announces
 reticulum lxmf status [instance]
 reticulum lxmf announce [instance]
+reticulum lxmf sync [instance]
 reticulum lxmf open <destination-hex>
 reticulum lxmf identity generate <instance> [--force]
 messages add lxmf <name> [display-name]
