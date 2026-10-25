@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 
 #include "solar_os_lxmf_internal.h"
+#include "solar_os_lxmf_stamp.h"
 
 extern "C" {
 #include "solar_os_contacts.h"
@@ -61,6 +62,14 @@ constexpr size_t kOverhead =
  * messaging service holds, and a longer one is marked as cut.
  */
 constexpr size_t kMessageMax = 64U * 1024U;
+/*
+ * Stamp candidates tried per pass of the Reticulum loop, about 40 ms on an
+ * ESP32-S3, so a stamp that takes seconds does not hold up the radio.
+ */
+constexpr uint32_t kStampSliceAttempts = 2048U;
+/* About nine minutes of search on an ESP32-S3, which takes two at cost 16. */
+constexpr uint32_t kStampCostMax = 24U;
+constexpr const char *kPropagationAspect = "propagation";
 constexpr const char *kIdentityLabel = "identity";
 constexpr size_t kPrivateKeySize = 64U;
 
@@ -76,6 +85,13 @@ struct Pending {
     bool link_failed;
     /* The tries for a link ran out and it is going as a single packet. */
     bool opportunistic;
+    /* The tries for a link ran out and it is going to a propagation node,
+     * to be held there for the recipient. */
+    bool propagated;
+    /* The recipient hash and the encrypted rest, then the stamp once it is
+     * found: what the propagation node is given. */
+    RNS::Bytes propagation_message;
+    bool stamped;
     int64_t next_attempt_us;
     /* When the last single packet went out; zero if none has. Its proof
      * can still come until the receipt times out. */
@@ -116,6 +132,14 @@ struct Instance {
     RNS::Link direct{RNS::Type::NONE};
     RNS::Bytes direct_peer;
     RNS::Bytes sending_resource;
+    /* The link to the propagation node, kept like the direct one. */
+    RNS::Link propagation_link{RNS::Type::NONE};
+    RNS::Bytes propagation_peer;
+    /* The stamp being searched for, a slice per pass. */
+    solar_os_lxmf_stamp_t stamp;
+    bool stamp_open;
+    uint8_t stamp_candidate[SOLAR_OS_LXMF_STAMP_SIZE];
+    uint32_t stamp_cost;
     int64_t last_process_us;
 };
 
@@ -128,6 +152,28 @@ public:
     void received_announce(const RNS::Bytes &destination_hash,
                            const RNS::Identity &announced_identity,
                            const RNS::Bytes &app_data) override;
+};
+
+class PropagationAnnounces final : public RNS::AnnounceHandler {
+public:
+    PropagationAnnounces()
+        : RNS::AnnounceHandler(SOLAR_OS_LXMF_APP_NAME ".propagation")
+    {
+    }
+    void received_announce(const RNS::Bytes &destination_hash,
+                           const RNS::Identity &announced_identity,
+                           const RNS::Bytes &app_data) override;
+};
+
+/*
+ * The propagation node messages go to: the nearest active one heard, as the
+ * LXMF router picks one when none is set. Worker thread only, but for the
+ * copy in propagation_status, which is guarded by lock.
+ */
+struct PropagationNode {
+    RNS::Bytes destination;
+    solar_os_lxmf_propagation_node_t info;
+    uint8_t hops;
 };
 
 SemaphoreHandle_t lock = nullptr;
@@ -144,6 +190,13 @@ bool job_attached = false;
  * callback and then asks whether to prove it, both on the worker thread. */
 bool withhold_proof = false;
 RNS::HAnnounceHandler announce_handler;
+RNS::HAnnounceHandler propagation_handler;
+PropagationNode propagation_node;
+struct {
+    char hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
+    uint8_t hops;
+    uint32_t stamp_cost;
+} propagation_status;
 /* The message being taken in. Receiving is one at a time on the worker. */
 EXT_RAM_BSS_ATTR char inbound_body[SOLAR_OS_MESSAGING_BODY_MAX];
 
@@ -320,6 +373,41 @@ void DeliveryAnnounces::received_announce(const RNS::Bytes &destination_hash,
             in.counters.peers++;
         }
     }
+}
+
+void PropagationAnnounces::received_announce(const RNS::Bytes &destination_hash,
+                                             const RNS::Identity &,
+                                             const RNS::Bytes &app_data)
+{
+    solar_os_lxmf_propagation_node_t info;
+    if (!solar_os_lxmf_parse_propagation_announce(app_data.data(), app_data.size(),
+                                                  &info)) {
+        return;
+    }
+    const uint8_t hops = RNS::Transport::hops_to(destination_hash);
+    const bool current = propagation_node.destination == destination_hash;
+    if (!info.active) {
+        if (!current) {
+            return;
+        }
+        propagation_node = PropagationNode{};
+    } else if (current || !propagation_node.destination ||
+               hops < propagation_node.hops) {
+        propagation_node.destination = destination_hash;
+        propagation_node.info = info;
+        propagation_node.hops = hops;
+    } else {
+        return;
+    }
+    Guard guard;
+    if (propagation_node.destination) {
+        hash_hex(propagation_node.destination, propagation_status.hex,
+                 sizeof(propagation_status.hex));
+    } else {
+        propagation_status.hex[0] = '\0';
+    }
+    propagation_status.hops = propagation_node.hops;
+    propagation_status.stamp_cost = propagation_node.info.stamp_cost;
 }
 
 void count_rejected(Instance &in)
@@ -563,6 +651,14 @@ void link_established(RNS::Link &link)
     }
 }
 
+void end_stamp(Instance &in)
+{
+    if (in.stamp_open) {
+        solar_os_lxmf_stamp_end(&in.stamp);
+        in.stamp_open = false;
+    }
+}
+
 /* Worker thread only. A receipt that outlives its instance finds no match. */
 void conclude(solar_os_messaging_provider_id_t id, uint32_t request_id,
               solar_os_delivery_state_t state, const char *error)
@@ -578,10 +674,13 @@ void conclude(solar_os_messaging_provider_id_t id, uint32_t request_id,
     }
     in->pending.active = false;
     in->pending.concluded = true;
+    end_stamp(*in);
     (void)solar_os_messaging_outbox_update(request_id, state, error);
     Guard guard;
     if (state == SOLAR_OS_DELIVERY_DELIVERED) {
         in->counters.delivered++;
+    } else if (state == SOLAR_OS_DELIVERY_SENT) {
+        in->counters.propagated++;
     } else if (state == SOLAR_OS_DELIVERY_FAILED) {
         in->counters.failed++;
     }
@@ -745,7 +844,9 @@ void link_ready(RNS::Link &link)
 {
     for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
         Instance &in = slots[i];
-        if (in.in_use && in.direct && in.direct.hash() == link.hash()) {
+        if (in.in_use && ((in.direct && in.direct.hash() == link.hash()) ||
+                          (in.propagation_link &&
+                           in.propagation_link.hash() == link.hash()))) {
             Guard guard;
             in.counters.links++;
             in.last_process_us = 0;
@@ -765,7 +866,10 @@ void resource_sent(const RNS::Resource &resource)
         }
         in.sending_resource = RNS::Bytes();
         if (resource.status() == RNS::Type::Resource::COMPLETE) {
-            conclude(in.id, in.pending.request_id, SOLAR_OS_DELIVERY_DELIVERED,
+            /* A propagation node holds it; only the recipient delivers. */
+            conclude(in.id, in.pending.request_id,
+                     in.pending.propagated ? SOLAR_OS_DELIVERY_SENT :
+                                             SOLAR_OS_DELIVERY_DELIVERED,
                      nullptr);
             return;
         }
@@ -840,6 +944,229 @@ void send_over_link(Instance &in)
     in.pending.sending = true;
 }
 
+void drop_propagation_link(Instance &in)
+{
+    if (in.propagation_link) {
+        try {
+            in.propagation_link.teardown();
+        } catch (const std::exception &failure) {
+            SOLAR_OS_LOGW(TAG, "link not closed: %s", failure.what());
+        }
+    }
+    in.propagation_link = RNS::Link({RNS::Type::NONE});
+    in.propagation_peer = RNS::Bytes();
+    in.sending_resource = RNS::Bytes();
+    if (in.pending.active && in.pending.propagated && in.pending.sending) {
+        /* What was in flight went with the link (a collection can drop it
+         * mid-resource), and its callback can no longer be matched: this
+         * try is over. */
+        in.pending.sending = false;
+        in.pending.next_attempt_us = esp_timer_get_time() + kDeliveryRetryWaitUs;
+    }
+}
+
+RNS::Destination propagation_destination(const RNS::Identity &node)
+{
+    return RNS::Destination(node,
+                            RNS::Type::Destination::OUT,
+                            RNS::Type::Destination::SINGLE,
+                            SOLAR_OS_LXMF_APP_NAME,
+                            kPropagationAspect);
+}
+
+/*
+ * Encrypts the message for its recipient, as only the recipient may read
+ * what a propagation node holds, and starts the search for its stamp. False
+ * while the recipient's identity, which the encryption needs, is asked for.
+ */
+bool prepare_propagation(Instance &in)
+{
+    RNS::Identity peer = RNS::Identity::recall(in.pending.destination);
+    if (!peer) {
+        RNS::Transport::request_path(in.pending.destination);
+        return false;
+    }
+    RNS::Bytes message;
+    if (!build_message(in, message)) {
+        fail(in, in.pending.request_id, "Reticulum message could not be packed");
+        return false;
+    }
+    RNS::Bytes lxmf_data(in.pending.destination);
+    if (propagation_node.info.stamp_cost > kStampCostMax) {
+        /* Each bit doubles the work: past this it would take hours. */
+        fail(in, in.pending.request_id,
+             "the propagation node asks for too costly a stamp");
+        return false;
+    }
+    lxmf_data.append(delivery_destination(peer).encrypt(message));
+    const RNS::Bytes transient_id = RNS::Identity::full_hash(lxmf_data);
+    end_stamp(in);
+    if (solar_os_lxmf_stamp_begin(&in.stamp, transient_id.data(),
+                                  transient_id.size(),
+                                  SOLAR_OS_LXMF_STAMP_ROUNDS_PROPAGATION) != ESP_OK ||
+        solar_os_crypto_random(in.stamp_candidate,
+                               sizeof(in.stamp_candidate)) != ESP_OK) {
+        end_stamp(in);
+        fail(in, in.pending.request_id, "propagation stamp could not be made");
+        return false;
+    }
+    in.stamp_open = true;
+    in.stamp_cost = propagation_node.info.stamp_cost;
+    in.pending.propagation_message = lxmf_data;
+    in.pending.attempts = 0U;
+    return true;
+}
+
+/* One slice of the stamp search. Runs on every pass of the Reticulum loop,
+ * not on the outbound job's interval. */
+void stamp_step(Instance &in)
+{
+    uint32_t attempts = 0;
+    const esp_err_t error = solar_os_lxmf_stamp_search(
+        &in.stamp, in.stamp_cost, in.stamp_candidate, kStampSliceAttempts,
+        &attempts);
+    if (error == ESP_ERR_NOT_FOUND) {
+        return;
+    }
+    end_stamp(in);
+    if (error != ESP_OK) {
+        fail(in, in.pending.request_id, "propagation stamp could not be made");
+        return;
+    }
+    in.pending.propagation_message.append(in.stamp_candidate,
+                                          sizeof(in.stamp_candidate));
+    in.pending.stamped = true;
+    in.last_process_us = 0;
+}
+
+/* Gives the stamped message to the propagation node: in one packet if it
+ * fits, as a resource if it does not. */
+void send_to_propagation_node(Instance &in)
+{
+    const RNS::Bytes &message = in.pending.propagation_message;
+    const size_t room = message.size() + 16U;
+    RNS::Bytes wire;
+    uint8_t *out = wire.writable(room);
+    const size_t length = out == nullptr ? 0U :
+        solar_os_lxmf_pack_propagation((double)now_ms() / 1000.0,
+                                       message.data(), message.size(), out,
+                                       room);
+    if (length == 0U) {
+        fail(in, in.pending.request_id, "Reticulum message could not be packed");
+        return;
+    }
+    wire.resize(length);
+    const solar_os_messaging_provider_id_t id = in.id;
+    const uint32_t request_id = in.pending.request_id;
+    if (wire.size() <= SOLAR_OS_LXMF_LINK_PACKET_MAX) {
+        RNS::Packet packet(in.propagation_link, wire);
+        RNS::PacketReceipt receipt = packet.receipt_send();
+        if (!receipt) {
+            return;
+        }
+        receipt.set_timeout(kProofTimeoutSeconds);
+        receipt.set_delivery_handler([id, request_id](const RNS::PacketReceipt &) {
+            conclude(id, request_id, SOLAR_OS_DELIVERY_SENT, nullptr);
+        });
+        receipt.set_timeout_handler([id, request_id](const RNS::PacketReceipt &) {
+            Instance *owner = nullptr;
+            {
+                Guard guard;
+                owner = find_locked(id);
+            }
+            if (owner != nullptr && owner->pending.active &&
+                owner->pending.request_id == request_id) {
+                owner->pending.sending = false;
+                owner->pending.link_failed = true;
+            }
+        });
+    } else {
+        RNS::Resource resource(wire, in.propagation_link, true, false, resource_sent);
+        if (!resource) {
+            return;
+        }
+        in.sending_resource = resource.hash();
+    }
+    count_sent(in);
+    in.pending.sending = true;
+}
+
+/*
+ * One step of a message going to a propagation node, as the LXMF router
+ * sends one: encrypted for the recipient and stamped, then given to the node
+ * over a link. A node that turns the stamp down closes the link, which this
+ * counts as a failed try. Taken is all a sender learns: the node holds the
+ * message until the recipient asks for it.
+ */
+void process_propagated(Instance &in)
+{
+    Pending &pending = in.pending;
+    const int64_t now = esp_timer_get_time();
+    if (!pending.propagation_message) {
+        if (now <= pending.next_attempt_us) {
+            return;
+        }
+        if (pending.attempts >= kMaxDeliveryAttempts) {
+            fail(in, pending.request_id, "the Reticulum peer is unknown");
+            return;
+        }
+        pending.attempts++;
+        pending.next_attempt_us = now + kPathRequestWaitUs;
+        (void)prepare_propagation(in);
+        return;
+    }
+    if (!pending.stamped) {
+        return;
+    }
+    if (in.propagation_link &&
+        (pending.link_failed || in.propagation_peer != propagation_node.destination)) {
+        drop_propagation_link(in);
+    }
+    pending.link_failed = false;
+    if (in.propagation_link) {
+        switch (in.propagation_link.status()) {
+        case RNS::Type::Link::ACTIVE:
+            if (!pending.sending && now > pending.next_attempt_us) {
+                send_to_propagation_node(in);
+            }
+            return;
+        case RNS::Type::Link::CLOSED:
+            drop_propagation_link(in);
+            pending.sending = false;
+            pending.next_attempt_us = now + kDeliveryRetryWaitUs;
+            return;
+        default:
+            return; /* still being established */
+        }
+    }
+    if (now <= pending.next_attempt_us) {
+        return;
+    }
+    if (!propagation_node.destination) {
+        fail(in, pending.request_id, "no propagation node to hold the message");
+        return;
+    }
+    if (pending.propagation_message.size() + 32U >
+        (size_t)propagation_node.info.transfer_limit_kb * 1000U) {
+        fail(in, pending.request_id, "too long for the propagation node");
+        return;
+    }
+    if (pending.attempts >= kMaxDeliveryAttempts) {
+        fail(in, pending.request_id, "the propagation node did not take the message");
+        return;
+    }
+    pending.attempts++;
+    pending.next_attempt_us = now + kDeliveryRetryWaitUs;
+    RNS::Identity node = RNS::Identity::recall(propagation_node.destination);
+    if (!node || !RNS::Transport::has_path(propagation_node.destination)) {
+        RNS::Transport::request_path(propagation_node.destination);
+        pending.next_attempt_us = now + kPathRequestWaitUs;
+        return;
+    }
+    in.propagation_link = RNS::Link(propagation_destination(node), link_ready);
+    in.propagation_peer = propagation_node.destination;
+}
+
 /*
  * One step of the outbound job. Mirrors the direct branch of the LXMF
  * router: use the link to the peer if there is one, open one if there is a
@@ -850,6 +1177,10 @@ void send_over_link(Instance &in)
 void process_outbound(Instance &in)
 {
     Pending &pending = in.pending;
+    if (pending.propagated) {
+        process_propagated(in);
+        return;
+    }
     if (pending.opportunistic) {
         process_opportunistic(in);
         return;
@@ -880,6 +1211,15 @@ void process_outbound(Instance &in)
         return;
     }
     if (pending.attempts >= kMaxDeliveryAttempts) {
+        /* A recipient that holds no link is likely away: a propagation node
+         * keeps the message for it, where a lone packet would be lost. */
+        if (propagation_node.destination) {
+            pending.propagated = true;
+            pending.attempts = 0U;
+            pending.next_attempt_us = 0;
+            process_propagated(in);
+            return;
+        }
         if (strlen(in.pending_body) + kOverhead + 16U <= SOLAR_OS_LXMF_PACKET_MAX) {
             pending.opportunistic = true;
             pending.attempts = 0U;
@@ -1006,6 +1346,10 @@ esp_err_t listen(Instance &in)
             announce_handler = std::make_shared<DeliveryAnnounces>();
             RNS::Transport::register_announce_handler(announce_handler);
         }
+        if (!propagation_handler) {
+            propagation_handler = std::make_shared<PropagationAnnounces>();
+            RNS::Transport::register_announce_handler(propagation_handler);
+        }
         in.inbound = RNS::Destination(in.identity,
                                       RNS::Type::Destination::IN,
                                       RNS::Type::Destination::SINGLE,
@@ -1051,6 +1395,8 @@ void stop_listening(Instance &in, const char *detail)
         in.pending = Pending{};
     }
     drop_link(in);
+    drop_propagation_link(in);
+    end_stamp(in);
     try {
         RNS::Transport::deregister_destination(in.inbound);
     } catch (const std::exception &failure) {
@@ -1071,6 +1417,14 @@ void stop_listening(Instance &in, const char *detail)
             SOLAR_OS_LOGE(TAG, "detach failed: %s", failure.what());
         }
         announce_handler.reset();
+    }
+    if (!any_listening() && propagation_handler) {
+        try {
+            RNS::Transport::deregister_announce_handler(propagation_handler);
+        } catch (const std::exception &failure) {
+            SOLAR_OS_LOGE(TAG, "detach failed: %s", failure.what());
+        }
+        propagation_handler.reset();
     }
     if (!in.removing) {
         (void)solar_os_messaging_provider_set_status(in.id, false, false,
@@ -1137,6 +1491,9 @@ void tick_instance(Instance &in)
         if (announce_now) {
             announce(in);
         }
+        if (in.pending.active && in.pending.propagated && in.stamp_open) {
+            stamp_step(in);
+        }
         /* The outbound job runs on its own interval, as the LXMF router's
          * does, rather than on every pass of the Reticulum loop. */
         const int64_t now = esp_timer_get_time();
@@ -1153,6 +1510,11 @@ void tick_instance(Instance &in)
                  in.direct.no_data_for() > kLinkIdleSeconds)) {
                 drop_link(in);
             }
+            if (!in.pending.active && in.propagation_link &&
+                (in.propagation_link.status() == RNS::Type::Link::CLOSED ||
+                 in.propagation_link.no_data_for() > kLinkIdleSeconds)) {
+                drop_propagation_link(in);
+            }
         }
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "tick failed: %s", failure.what());
@@ -1163,7 +1525,11 @@ void tick_instance(Instance &in)
         if (in.pending.active) {
             /* Often passing (no interface up yet): count it as a try, and
              * let the tries run out as for any other failure. */
-            drop_link(in);
+            if (in.pending.propagated) {
+                drop_propagation_link(in);
+            } else {
+                drop_link(in);
+            }
             in.pending.sending = false;
             in.pending.attempts++;
             in.pending.next_attempt_us =
@@ -1801,6 +2167,10 @@ esp_err_t solar_os_lxmf_get_status(solar_os_messaging_provider_id_t id,
     strlcpy(status->display_name, name, sizeof(status->display_name));
     strlcpy(status->destination_hex, in->destination_hex,
             sizeof(status->destination_hex));
+    strlcpy(status->propagation_node_hex, propagation_status.hex,
+            sizeof(status->propagation_node_hex));
+    status->propagation_node_hops = propagation_status.hops;
+    status->propagation_stamp_cost = propagation_status.stamp_cost;
     return ESP_OK;
 }
 
