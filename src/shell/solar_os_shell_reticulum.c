@@ -33,6 +33,7 @@ static void reticulum_usage(solar_os_shell_io_t *io)
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
     solar_os_shell_io_writeln(io, "  reticulum lxmf status [instance]");
     solar_os_shell_io_writeln(io, "  reticulum lxmf announce [instance]");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf sync [instance]");
     solar_os_shell_io_writeln(io, "  reticulum lxmf open <destination-hex>");
     solar_os_shell_io_writeln(io, "  reticulum lxmf identity generate <instance> [--force]");
 #endif
@@ -232,6 +233,9 @@ static void reticulum_lxmf_status(solar_os_shell_io_t *io,
     } else {
         solar_os_shell_io_writeln(io, "  Propagation node: none heard");
     }
+    solar_os_shell_io_printf(io, "  Collected: %lu; last sync: %s\n",
+                             (unsigned long)status.collected,
+                             status.sync != NULL ? status.sync : "not yet");
     solar_os_shell_io_printf(io, "  Announces sent: %lu\n",
                              (unsigned long)status.announces_sent);
 }
@@ -239,24 +243,31 @@ static void reticulum_lxmf_status(solar_os_shell_io_t *io,
 static bool reticulum_lxmf(solar_os_shell_io_t *io, int argc, char **argv)
 {
     if ((argc == 3 || argc == 4) &&
-        (strcmp(argv[2], "status") == 0 || strcmp(argv[2], "announce") == 0)) {
+        (strcmp(argv[2], "status") == 0 || strcmp(argv[2], "announce") == 0 ||
+         strcmp(argv[2], "sync") == 0)) {
         const char *only = argc == 4 ? argv[3] : NULL;
         const bool announce = strcmp(argv[2], "announce") == 0;
+        const bool sync = strcmp(argv[2], "sync") == 0;
         solar_os_messaging_provider_id_t cursor = 0;
         solar_os_messaging_provider_status_t instance;
         bool any = false;
         while (reticulum_lxmf_next(only, &cursor, &instance)) {
             any = true;
-            if (!announce) {
+            if (!announce && !sync) {
                 reticulum_lxmf_status(io, &instance);
                 continue;
             }
-            const esp_err_t error = solar_os_lxmf_announce(instance.id);
+            const esp_err_t error = sync ? solar_os_lxmf_sync(instance.id) :
+                                           solar_os_lxmf_announce(instance.id);
             if (error == ESP_ERR_INVALID_STATE) {
                 solar_os_shell_io_printf(io, "%s: offline; start it with: job start reticulum <host> [port],"
                                          " and messages connect %s\n", instance.name, instance.name);
             } else if (error != ESP_OK) {
                 solar_os_shell_io_printf(io, "%s: %s\n", instance.name, solar_os_shell_error_text(error));
+            } else if (sync) {
+                solar_os_shell_io_printf(io, "%s: collecting from the propagation node; "
+                                         "see: reticulum lxmf status %s\n",
+                                         instance.name, instance.name);
             } else {
                 solar_os_shell_io_printf(io, "%s: LXMF announce sent\n", instance.name);
             }
