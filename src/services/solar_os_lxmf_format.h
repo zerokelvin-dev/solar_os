@@ -85,6 +85,37 @@ bool solar_os_lxmf_parse_announce(const uint8_t *data,
                                   char *name,
                                   size_t name_len);
 
+/* What a propagation node says of itself in its lxmf.propagation announce. */
+typedef struct {
+    /* It takes messages; a node can announce that it has stopped. */
+    bool active;
+    /* The largest upload it takes, in kilobytes. */
+    uint32_t transfer_limit_kb;
+    /* The stamp cost it asks for, and how far below it it still accepts. */
+    uint32_t stamp_cost;
+    uint32_t stamp_flexibility;
+} solar_os_lxmf_propagation_node_t;
+
+/*
+ * Accepts what LXMF's pn_announce_data_is_valid() accepts: [legacy flag,
+ * timebase, active, transfer limit, sync limit, [stamp cost, flexibility,
+ * peering cost], metadata]. Older nodes announce less and are refused.
+ */
+bool solar_os_lxmf_parse_propagation_announce(
+    const uint8_t *data,
+    size_t len,
+    solar_os_lxmf_propagation_node_t *node);
+
+/*
+ * An upload to a propagation node: [time, [message]], where the message is
+ * the recipient hash, the encrypted rest, and the propagation stamp.
+ */
+size_t solar_os_lxmf_pack_propagation(double timestamp_s,
+                                      const uint8_t *message,
+                                      size_t message_len,
+                                      uint8_t *out,
+                                      size_t out_len);
+
 /*
  * Writes a destination hash given as hexadecimal in its canonical form:
  * 32 lowercase digits. Surrounding angle brackets, as Reticulum prints a
