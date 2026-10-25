@@ -221,7 +221,7 @@ protected:
 			USTORE_LOG("[ustore] Initializing PosixFileSystem\n");
 #if defined(ESP32)
 			// Initialize LittleFS for POSIX file access
-			if (!LittleFS.begin(true, _basepath)) {
+			if (!LittleFS.begin(true, _basepath.c_str())) {
 				USTORE_LOG("[ustore] Failed to initialize PosixFileSystem!\n");
 				return false;
 			}
@@ -384,7 +384,6 @@ protected:
 		}
 
 	private:
-		// Store paths are relative ("./name/"); ESP-IDF has no working directory.
 		std::string resolve(const char* path) const {
 			if (path == nullptr || _basepath.empty() || path[0] == '/') {
 				return path ? path : "";

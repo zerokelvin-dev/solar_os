@@ -888,9 +888,7 @@ void Link::tick_resources() {
 	for (auto& r : outgoing) r.__watchdog_job();
 }
 
-// The Python reference runs the watchdog in a thread per link. Here it is one
-// pass of that loop, called for every pending and active link from
-// Transport::jobs(), the same way tick_resources() is.
+// No thread: Transport::jobs() calls __watchdog_job() for each link.
 void Link::start_watchdog() {
 }
 
@@ -901,8 +899,6 @@ void Link::__watchdog_job() {
 	}
 	const double now = OS::time();
 	switch (_object->_status) {
-		// Link was initiated, but no response from destination yet,
-		// or the handshake was never completed
 		case Type::Link::PENDING:
 		case Type::Link::HANDSHAKE:
 		{
@@ -935,8 +931,6 @@ void Link::__watchdog_job() {
 			}
 			break;
 		}
-		// The reference sleeps out the grace period after marking a link
-		// stale; a packet arriving in that time makes it active again.
 		case Type::Link::STALE:
 		{
 			const double last_inbound = std::max(std::max(_object->_last_inbound, _object->_last_proof), _object->_activated_at);

@@ -58,11 +58,8 @@ namespace RNS { namespace Cryptography {
 			}
 		}
 
-		// Returns the MAC of everything fed so far, then resets the object
-		// for another message. mbedtls_md_clone() copies only the digest
-		// state, not the HMAC key schedule, so a clone finishes against an
-		// empty outer pad and yields a MAC no other implementation agrees
-		// with. The live context has to be finished instead.
+		// Returns the MAC of everything fed so far and resets for another message.
+		// Don't finish a clone: mbedtls_md_clone() doesn't copy the HMAC key schedule.
 		Bytes digest() {
 			Bytes result;
 			int rc = mbedtls_md_hmac_finish(&_ctx, result.writable(_size));

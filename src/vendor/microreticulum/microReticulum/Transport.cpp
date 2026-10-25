@@ -377,8 +377,7 @@ DestinationEntry empty_destination_entry;
 	//p thread.start()
 
 	// Load transport-related data
-	// SolarOS: the persistent stores back the path table and known destinations of
-	// every node; upstream only opens them when transport is enabled.
+	// Every node needs these stores, not just transport nodes.
 	{
 		// Read in path table
 		//read_path_table();
@@ -545,7 +544,6 @@ DestinationEntry empty_destination_entry;
 					}
 				}
 
-				// The watchdogs of these links run once jobs are done
 				watched_links.insert(watched_links.end(), _pending_links.begin(), _pending_links.end());
 				watched_links.insert(watched_links.end(), _active_links.begin(), _active_links.end());
 
@@ -1012,11 +1010,7 @@ TRACEF("path_request_conditions=%u", path_request_conditions);
 
 	_jobs_running = false;
 
-	// The Python reference runs each link's watchdog, and through it the
-	// watchdogs of the link's resources, in a thread of its own. Both send
-	// packets: a keepalive, a teardown, a resource part asked for again. They
-	// run here rather than above because outbound() waits for jobs to finish,
-	// and would wait for ever on a send made while they run.
+	// Watchdogs send, and outbound() blocks while jobs run, so they run after.
 	for (auto& link : watched_links) {
 		if (link.status() != Type::Link::CLOSED) {
 			link.__watchdog_job();
@@ -1026,9 +1020,8 @@ TRACEF("path_request_conditions=%u", path_request_conditions);
 		}
 	}
 
-	// Process receipts list for timed-out packets. A timeout callback may
-	// send, so like the watchdogs this runs once jobs are done. The Python
-	// reference runs such a callback in a thread of its own.
+	// Process receipts list for timed-out packets
+	// Runs after jobs: a timeout callback may send.
 	if (jobs_ran && OS::time() > (_receipts_last_checked + _receipts_check_interval)) {
 		while (_receipts.size() > Type::Transport::MAX_RECEIPTS) {
 			//p culled_receipt = Transport.receipts.pop(0)

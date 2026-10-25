@@ -23,8 +23,8 @@ OVERLAY = ROOT / "patches" / "microreticulum" / "overlay"
 # A source ending in "/" copies the directory; destinations are relative to the output.
 REPOSITORIES = {
     "microReticulum": (
-        "https://github.com/attermann/microReticulum.git",
-        "40fa628809d57140180c1c833559ab96fec992c1",
+        "https://github.com/zerokelvin-dev/microReticulum.git",
+        "86fc5e89158278b2382c65f5e438dc2681aef873",
         [
             ("src/microReticulum.h", "microReticulum.h"),
             ("src/microReticulum/", "microReticulum/"),
@@ -32,8 +32,8 @@ REPOSITORIES = {
         ],
     ),
     "microStore": (
-        "https://github.com/attermann/microStore.git",
-        "0f28567fe00ab8ab14624a34c2e9e0a000a44c46",
+        "https://github.com/zerokelvin-dev/microStore.git",
+        "03290c10be52242dd53e78192b2bb632d408f774",
         [
             ("include/microStore/", "microStore/"),
             ("LICENSE", "LICENSE.microstore.txt"),
@@ -193,11 +193,6 @@ def build(output: Path, kept_readme: bytes | None) -> None:
         else:
             target.unlink()
 
-    for patch in sorted(OVERLAY.parent.glob("*.patch")):
-        subprocess.run(
-            ["git", "apply", str(patch)],
-            check=True, cwd=output,
-        )
     if OVERLAY.is_dir():
         shutil.copytree(OVERLAY, output, dirs_exist_ok=True)
 

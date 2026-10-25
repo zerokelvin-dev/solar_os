@@ -309,7 +309,7 @@ namespace RNS { namespace Type {
 		static const uint8_t STALE_GRACE = 5;
 		static const uint16_t KEEPALIVE_MAX = 360;
 		static const uint16_t KEEPALIVE_MIN = 5;
-		// Default interval for sending keep-alive packets on established links in seconds.
+		// Interval for sending keep-alive packets on established links in seconds.
 		static const uint16_t KEEPALIVE = KEEPALIVE_MAX;
 		/*
 		If no traffic or keep-alive packets are received within this period, the
