@@ -1044,6 +1044,7 @@ depends = ["service_contacts", "service_crypto", "service_messaging", "service_r
 sources = [
   "services/solar_os_lxmf.cpp",
   "services/solar_os_lxmf_format.c",
+  "services/solar_os_lxmf_settings.c",
   "services/solar_os_lxmf_stamp.c",
 ]
 

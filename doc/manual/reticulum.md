@@ -104,6 +104,8 @@ display name, conversations, and joined groups. Up to four run at once.
 reticulum lxmf status [INSTANCE]
 reticulum lxmf announce [INSTANCE]
 reticulum lxmf sync [INSTANCE]
+reticulum lxmf propagation [node DESTINATION_HEX|auto]
+reticulum lxmf propagation interval MINUTES|off
 reticulum lxmf identity generate INSTANCE [--force]
 messages add lxmf NAME [DISPLAY_NAME]
 messages query NAME DESTINATION_HEX
@@ -203,8 +205,9 @@ queued or sending then is marked failed, as for every provider.
 ### Propagation nodes
 
 A propagation node holds messages for recipients that are away; on a
-Reticulum network it is usually `lxmd -p`. SolarOS uses the nearest active
-node it has heard announce, as `reticulum lxmf status` shows, and sends
+Reticulum network it is usually `lxmd -p`. SolarOS uses the node set, or
+else the nearest active node it has heard announce, as `reticulum lxmf
+status` shows, and sends
 through it only after direct delivery has failed. The message is encrypted
 for its recipient, so the node cannot read it, and carries the proof-of-work
 stamp the node asks for in its announce; on an ESP32-S3 that takes about two
@@ -215,15 +218,30 @@ fails the message.
 
 Each instance also collects what the node holds for it: once a node is
 heard, then every six hours, as NomadNet does by default, and whenever
-`reticulum lxmf sync` asks. It identifies to the node, asks what it holds,
+`reticulum lxmf sync` asks. `reticulum lxmf propagation interval MINUTES`
+changes the six hours, and `off` leaves collecting to `reticulum lxmf sync`. It identifies to the node, asks what it holds,
 fetches up to sixteen messages at a time, and tells the node which arrived so
 it deletes them. A message whose sender SolarOS has not heard announce is
 left on the node while the sender's announce is asked for, and collection
 looks again a minute later. `reticulum lxmf status` counts what was collected
 and says how the last collection went.
 
-A node is chosen only from its announce, which `lxmd` sends at start and
-every six hours by default; its `announce_interval` sets that.
+Without a node set, one is chosen from the announces heard, which `lxmd`
+sends at start and every six hours by default; its `announce_interval` sets
+that. `reticulum lxmf propagation node DESTINATION_HEX` sets the node every
+instance uses, and the others heard are ignored. A node that is set does not
+need to be heard announcing: SolarOS asks for a path to it, which brings its
+announce data back, and asks again every five minutes until it answers.
+`reticulum lxmf propagation node auto` goes back to the nearest heard.
+
+```text
+reticulum lxmf propagation
+reticulum lxmf propagation node DESTINATION_HEX|auto
+reticulum lxmf propagation interval MINUTES|off
+```
+
+These settings are for the device, not an instance, and are kept in
+`.settings/lxmf.bin`.
 
 There are no attachments. A message to a peer that never becomes reachable,
 with no propagation node heard, fails rather than waiting for it.
@@ -253,6 +271,8 @@ reticulum announces
 reticulum lxmf status [instance]
 reticulum lxmf announce [instance]
 reticulum lxmf sync [instance]
+reticulum lxmf propagation [node <destination-hex>|auto]
+reticulum lxmf propagation interval <minutes>|off
 reticulum lxmf open <destination-hex>
 reticulum lxmf identity generate <instance> [--force]
 messages add lxmf <name> [display-name]
