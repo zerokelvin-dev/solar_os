@@ -120,6 +120,8 @@ display name, conversations, and joined groups. Up to four run at once.
 reticulum lxmf status [INSTANCE]
 reticulum lxmf announce [INSTANCE]
 reticulum lxmf sync [INSTANCE]
+reticulum lxmf propagation [node DESTINATION_HEX|auto|none]
+reticulum lxmf propagation interval MINUTES|off
 reticulum lxmf identity generate INSTANCE [--force]
 messages add lxmf NAME [DISPLAY_NAME]
 messages query NAME DESTINATION_HEX
@@ -216,8 +218,8 @@ driven by whether Reticulum has a path rather than by a clock alone: a try
 without a path is followed by a path request, and a try with one opens a
 link. A link that does not carry the message is closed, and the next try
 opens another. Three tries, ten seconds apart. After them the message goes to
-a propagation node, if one has been heard, to be held there until the
-recipient collects it. Without one, a message whose body fits a single packet
+a propagation node, if one is set or `auto` has found one, to be held there
+until the recipient collects it. Without one, a message whose body fits a single packet
 (287 bytes) is sent opportunistically, without a link, which reaches a peer
 that can hear a packet and not hold a link; a longer one is marked failed. An
 opportunistic message is marked failed only once its last packet has gone
@@ -231,39 +233,67 @@ queued or sending then is marked failed, as for every provider.
 ### Propagation nodes
 
 A propagation node holds messages for recipients that are away; on a
-Reticulum network it is usually `lxmd -p`. SolarOS uses the nearest active
-node it has heard announce, as `reticulum lxmf status` shows, and sends
-through it only after direct delivery has failed. The message is encrypted
+Reticulum network it is usually `lxmd -p`. None is used until one is chosen:
+SolarOS uses the node set, or with `auto` the nearest active node it has
+heard announce, as `reticulum lxmf status` shows, and sends through it only
+after direct delivery has failed. The message is encrypted
 for its recipient, so the node cannot read it, and carries the proof-of-work
 stamp the node asks for in its announce; on an ESP32-S3 that takes about two
 seconds at a node's usual cost of 16, and doubles with each step up. A node
-asking for more than 24 (about nine minutes) fails the message rather than
-tying up the queue. Once the node takes it the message is
+asking for more than 24 (about nine minutes), or more than 16 when `auto`
+picked it, fails the message rather than tying up the queue. Once the node takes it the message is
 shown as sent: the node holds it, and only the recipient's client can say it
 arrived. A node that refuses the stamp, or cannot be reached in three tries,
 fails the message.
 
-Each instance also collects what the node holds for it: once a node is
-heard, then every six hours, as NomadNet does by default, and whenever
-`reticulum lxmf sync` asks. It identifies to the node, asks what it holds,
+Each instance also collects what the node set holds for it: once the node
+is heard, then every six hours, as NomadNet does by default, and whenever
+`reticulum lxmf sync` asks. A node `auto` picked is collected from only when
+`reticulum lxmf sync` asks: anyone in range can announce one, and collecting
+tells it who this device is. `reticulum lxmf propagation interval MINUTES`
+changes the six hours, and `off` leaves collecting to `reticulum lxmf sync`.
+It identifies to the node, asks what it holds,
 fetches up to sixteen messages at a time, and tells the node which arrived so
-it deletes them. A message whose sender SolarOS has not heard announce is
-left on the node while the sender's announce is asked for, and collection
-looks again a minute later. `reticulum lxmf status` counts what was collected
-and says how the last collection went.
+it deletes them, collecting again at once while more are waiting, up to
+eight times in a row. A message whose sender SolarOS has not heard announce
+is kept, marked sender-unverified as the LXMF router marks it, and the
+sender's announce is asked for. One from a blocked sender, or one that cannot
+be read, is deleted from the node and not shown. Only one the message store
+cannot take for now (a full or missing card) is left on the node, for the
+next collection. A message already delivered, kept by ID across restarts,
+is deleted from the node and not shown again. A node that
+takes a request and never answers holds that collection for up to fifteen
+minutes before it is counted as failed. `reticulum lxmf status` counts what
+was collected and says how the last collection went.
 
-A node is chosen only from its announce, which `lxmd` sends at start and
-every six hours by default; its `announce_interval` sets that.
+`reticulum lxmf propagation node DESTINATION_HEX` sets the node every
+instance uses, and the others heard are ignored. `auto` instead chooses one
+from the announces heard, which `lxmd` sends at start and every six hours by
+default; its `announce_interval` sets that. A node that is set does not
+need to be heard announcing: SolarOS asks for a path to it, which brings its
+announce data back, and asks again every five minutes until it answers.
+`none` stops using a propagation node.
+
+```text
+reticulum lxmf propagation
+reticulum lxmf propagation node DESTINATION_HEX|auto|none
+reticulum lxmf propagation interval MINUTES|off
+```
+
+These settings are for the device, not an instance, and are kept in
+`.settings/lxmf.bin`.
 
 There are no attachments. A message to a peer that never becomes reachable,
-with no propagation node heard, fails rather than waiting for it.
+with no propagation node, fails rather than waiting for it.
 
-Inbound messages are shown only when their signature verifies against an
-identity SolarOS already knows. A message from a peer it has not heard
-announce is not acknowledged: SolarOS asks for the peer's path, and the
-peer's next try, once its announce has arrived, is verified and shown. A
-message from such a peer that arrives as a resource is dropped, because the
-transfer itself acknowledges it.
+Messages delivered directly are shown only when their signature verifies
+against an identity SolarOS already knows. A message from a peer it has not
+heard announce is not acknowledged: SolarOS asks for the peer's path, at most
+once every five minutes for each sender and once every ten seconds in all,
+and the peer's next try, once its announce has arrived, is verified and
+shown. A message from such a peer that arrives as a resource is dropped,
+because the transfer itself acknowledges it. Messages collected from a
+propagation node are the exception, as above.
 
 ## Limits
 
@@ -289,6 +319,8 @@ reticulum announces
 reticulum lxmf status [instance]
 reticulum lxmf announce [instance]
 reticulum lxmf sync [instance]
+reticulum lxmf propagation [node <destination-hex>|auto|none]
+reticulum lxmf propagation interval <minutes>|off
 reticulum lxmf open <destination-hex>
 reticulum lxmf identity generate <instance> [--force]
 messages add lxmf <name> [display-name]

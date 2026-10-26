@@ -92,10 +92,15 @@ constexpr uint32_t kStampSliceAttempts = 2048U;
 constexpr uint32_t kStampSliceRounds = 50U;
 /* About nine minutes of search on an ESP32-S3, which takes two at cost 16. */
 constexpr uint32_t kStampCostMax = 24U;
+/* A node picked from announces, which anyone can send, gets the usual cost
+ * and no more. */
+constexpr uint32_t kStampCostAutoMax = 16U;
 constexpr const char *kPropagationAspect = "propagation";
-/* How often messages are collected from the propagation node unasked, as
- * NomadNet does by default. */
-constexpr int64_t kSyncIntervalUs = 6LL * 3600LL * 1000000LL;
+/* How often a propagation node that is set but not yet heard from is asked
+ * for. */
+constexpr int64_t kNodeRequestIntervalUs = 5LL * 60LL * 1000000LL;
+/* How often settings changed elsewhere are taken up. */
+constexpr int64_t kSettingsCheckUs = 1000000LL;
 /* A collection that has not finished in this long is given up. */
 constexpr int64_t kSyncDeadlineUs = 15LL * 60LL * 1000000LL;
 /* Collections run back to back while the node holds more than one batch
@@ -148,8 +153,8 @@ struct Sync {
     uint8_t tries;
     int64_t next_try_us;
     int64_t deadline_us;
-    /* When to collect again unasked. */
-    int64_t next_us;
+    /* When the last collection started; zero before the first. */
+    int64_t last_us;
     /* The request an answer is awaited for. */
     RNS::Bytes request;
     size_t listed;
@@ -233,9 +238,9 @@ public:
 };
 
 /*
- * The propagation node messages go to: the nearest active one heard, as the
- * LXMF router picks one when none is set. Worker thread only, but for the
- * copy in propagation_status, which is guarded by lock.
+ * The propagation node messages go to: the one set, or the nearest active
+ * one heard, as the LXMF router picks one when none is set. Worker thread
+ * only, but for the copy in propagation_status, which is guarded by lock.
  */
 struct PropagationNode {
     RNS::Bytes destination;
@@ -355,6 +360,11 @@ bool withhold_proof = false;
 RNS::HAnnounceHandler announce_handler;
 RNS::HAnnounceHandler propagation_handler;
 PropagationNode propagation_node;
+/* Worker thread only: the settings as of this pass, the node they set, and
+ * when that node was last asked for. */
+solar_os_lxmf_settings_t settings;
+RNS::Bytes set_node;
+int64_t set_node_requested_us;
 struct {
     char hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
     uint8_t hops;
@@ -592,30 +602,9 @@ void DeliveryAnnounces::received_announce(const RNS::Bytes &destination_hash,
     }
 }
 
-void PropagationAnnounces::received_announce(const RNS::Bytes &destination_hash,
-                                             const RNS::Identity &,
-                                             const RNS::Bytes &app_data)
+void use_propagation_node(const PropagationNode &node)
 {
-    solar_os_lxmf_propagation_node_t info;
-    if (!solar_os_lxmf_parse_propagation_announce(app_data.data(), app_data.size(),
-                                                  &info)) {
-        return;
-    }
-    const uint8_t hops = RNS::Transport::hops_to(destination_hash);
-    const bool current = propagation_node.destination == destination_hash;
-    if (!info.active) {
-        if (!current) {
-            return;
-        }
-        propagation_node = PropagationNode{};
-    } else if (current || !propagation_node.destination ||
-               hops < propagation_node.hops) {
-        propagation_node.destination = destination_hash;
-        propagation_node.info = info;
-        propagation_node.hops = hops;
-    } else {
-        return;
-    }
+    propagation_node = node;
     Guard guard;
     if (propagation_node.destination) {
         hash_hex(propagation_node.destination, propagation_status.hex,
@@ -625,6 +614,72 @@ void PropagationAnnounces::received_announce(const RNS::Bytes &destination_hash,
     }
     propagation_status.hops = propagation_node.hops;
     propagation_status.stamp_cost = propagation_node.info.stamp_cost;
+}
+
+void PropagationAnnounces::received_announce(const RNS::Bytes &destination_hash,
+                                             const RNS::Identity &,
+                                             const RNS::Bytes &app_data)
+{
+    solar_os_lxmf_propagation_node_t info;
+    if ((!set_node && !settings.auto_node) ||
+        (set_node && destination_hash != set_node) ||
+        !solar_os_lxmf_parse_propagation_announce(app_data.data(), app_data.size(),
+                                                  &info)) {
+        return;
+    }
+    const uint8_t hops = RNS::Transport::hops_to(destination_hash);
+    const bool current = propagation_node.destination == destination_hash;
+    if (!info.active) {
+        if (current) {
+            use_propagation_node(PropagationNode{});
+        }
+    } else if (current || !propagation_node.destination ||
+               hops < propagation_node.hops) {
+        use_propagation_node(PropagationNode{destination_hash, info, hops});
+    }
+}
+
+/*
+ * A node that is set is the only one used. Until its announce is heard, it
+ * is asked for: a path request brings back its announce data, which is all
+ * that choosing it needs.
+ */
+void follow_settings()
+{
+    solar_os_lxmf_settings_get(&settings);
+    RNS::Bytes wanted;
+    if (settings.propagation_node[0] != '\0') {
+        wanted.assignHex(settings.propagation_node);
+    }
+    if (wanted != set_node) {
+        set_node = wanted;
+        set_node_requested_us = 0;
+        if (set_node && propagation_node.destination != set_node) {
+            use_propagation_node(PropagationNode{});
+        }
+    }
+    if (!set_node && !settings.auto_node && propagation_node.destination) {
+        use_propagation_node(PropagationNode{}); /* none, from now on */
+    }
+    if (!set_node || propagation_node.destination == set_node) {
+        return;
+    }
+    const RNS::Bytes app_data = RNS::Identity::recall_app_data(set_node);
+    solar_os_lxmf_propagation_node_t info;
+    if (app_data &&
+        solar_os_lxmf_parse_propagation_announce(app_data.data(), app_data.size(),
+                                                 &info) &&
+        info.active && RNS::Transport::has_path(set_node)) {
+        use_propagation_node(PropagationNode{set_node, info,
+                                             RNS::Transport::hops_to(set_node)});
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (set_node_requested_us == 0 ||
+        now - set_node_requested_us >= kNodeRequestIntervalUs) {
+        set_node_requested_us = now;
+        RNS::Transport::request_path(set_node);
+    }
 }
 
 void count_rejected(Instance &in)
@@ -1293,7 +1348,8 @@ bool prepare_propagation(Instance &in)
         return false;
     }
     RNS::Bytes lxmf_data(in.pending.destination);
-    if (propagation_node.info.stamp_cost > kStampCostMax) {
+    if (propagation_node.info.stamp_cost >
+        (set_node ? kStampCostMax : kStampCostAutoMax)) {
         /* Each bit doubles the work: past this it would take hours. */
         fail(in, in.pending.request_id,
              "the propagation node asks for too costly a stamp");
@@ -1775,15 +1831,21 @@ void process_sync(Instance &in)
         }
         if (!propagation_node.destination) {
             if (asked) {
-                set_sync_result(in, "no propagation node heard");
+                set_sync_result(in, set_node || settings.auto_node ?
+                                        "no propagation node heard" :
+                                        "no propagation node set");
             }
             return;
         }
-        const bool due = now >= in.sync.next_us;
+        const int64_t interval_us =
+            (int64_t)settings.sync_interval_min * 60LL * 1000000LL;
+        /* Unasked, only from the node set. */
+        const bool due = interval_us != 0 && set_node &&
+                         (in.sync.last_us == 0 || now - in.sync.last_us >= interval_us);
         if (!asked && !due) {
             return;
         }
-        in.sync.next_us = now + kSyncIntervalUs;
+        in.sync.last_us = now;
         in.sync.step = SyncStep::linking;
         in.sync.tries = 0U;
         in.sync.next_try_us = 0;
@@ -2183,6 +2245,12 @@ void tick()
         return;
     }
     flush_contacts(false);
+    static int64_t followed_us = 0;
+    const int64_t now = esp_timer_get_time();
+    if (any_listening() && (followed_us == 0 || now - followed_us >= kSettingsCheckUs)) {
+        followed_us = now;
+        follow_settings();
+    }
     for (size_t i = 0; i < SOLAR_OS_LXMF_INSTANCE_MAX; i++) {
         bool active = false;
         {

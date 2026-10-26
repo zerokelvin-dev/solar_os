@@ -1070,7 +1070,7 @@ static const char * const reticulum_subcommands[] = {
 };
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
 static const char * const reticulum_lxmf_subcommands[] = {
-    "status", "announce", "open", "identity",
+    "status", "announce", "open", "identity", "sync", "propagation",
 };
 #endif
 static const char * const reticulum_identity_subcommands[] = {
