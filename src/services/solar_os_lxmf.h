@@ -49,7 +49,8 @@ typedef struct {
     /* Not ESP_OK when the instance's identity could not be loaded. */
     esp_err_t identity_error;
     /* The propagation node a message goes to when its recipient cannot be
-     * reached: the nearest active one heard. Empty when none has been. */
+     * reached: the one set, or the nearest active one heard. Empty until it
+     * is heard from. */
     char propagation_node_hex[SOLAR_OS_LXMF_HASH_HEX_LEN];
     uint8_t propagation_node_hops;
     uint32_t propagation_stamp_cost;
@@ -59,6 +60,25 @@ typedef struct {
     uint32_t collected;
     const char *sync;
 } solar_os_lxmf_status_t;
+
+/* NomadNet's default, six hours, and at most a week. */
+#define SOLAR_OS_LXMF_SYNC_INTERVAL_DEFAULT 360U
+#define SOLAR_OS_LXMF_SYNC_INTERVAL_MAX (7U * 24U * 60U)
+
+/* Settings for every instance: the propagation node they send through and
+ * collect from, and how often they collect unasked. */
+typedef struct {
+    uint32_t version;
+    /* A propagation node's destination hash, or empty for the nearest
+     * active one heard. */
+    char propagation_node[SOLAR_OS_LXMF_HASH_HEX_LEN];
+    /* Minutes between collections; zero collects only when asked. */
+    uint32_t sync_interval_min;
+} solar_os_lxmf_settings_t;
+
+void solar_os_lxmf_settings_get(solar_os_lxmf_settings_t *settings);
+/* Saves the settings, which take effect on the worker's next pass. */
+esp_err_t solar_os_lxmf_settings_set(const solar_os_lxmf_settings_t *settings);
 
 /* Registers the lxmf messaging class and restores its saved instances. */
 esp_err_t solar_os_lxmf_init(void);
@@ -76,8 +96,8 @@ esp_err_t solar_os_lxmf_get_status(solar_os_messaging_provider_id_t id,
 esp_err_t solar_os_lxmf_announce(solar_os_messaging_provider_id_t id);
 
 /* Collects the messages the propagation node holds for the instance. This
- * happens unasked every six hours; asking returns at once, and the status
- * says how it went. */
+ * also happens unasked, as the settings say; asking returns at once, and the
+ * status says how it went. */
 esp_err_t solar_os_lxmf_sync(solar_os_messaging_provider_id_t id);
 
 /* Makes a new identity for an instance whose own is missing or unreadable,
