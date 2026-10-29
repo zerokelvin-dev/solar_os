@@ -22,8 +22,9 @@ extern "C" {
 #define SOLAR_OS_RETICULUM_ASPECT "node"
 
 /* The Messaging instance, of class "reticulum", whose Credentials record
- * holds this node's transport identity. It carries no conversations. The
- * first call creates it on mounted storage; zero when that fails. */
+ * holds this node's transport identity. It carries no conversations; each
+ * LXMF instance has an identity of its own. The first call creates it on
+ * mounted storage; zero when that fails. */
 solar_os_messaging_provider_id_t solar_os_reticulum_instance(void);
 
 typedef struct {
