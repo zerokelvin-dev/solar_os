@@ -18,6 +18,9 @@ static wl_handle_t flash_wl_handle = WL_INVALID_HANDLE;
 static uint8_t flash_logical_volume = FLASH_STORAGE_LOGICAL_VOLUME_INVALID;
 static char flash_mount_point[FLASH_STORAGE_MOUNT_POINT_MAX];
 static char flash_status[64] = "not mounted";
+/* The partition holds data that is not a FAT volume, such as another
+ * firmware's storage. It is left alone until someone formats it. */
+static bool flash_unrecognized;
 
 static const esp_partition_t *flash_storage_partition(void)
 {
@@ -85,8 +88,9 @@ esp_err_t flash_storage_mount(const char *mount_point)
         return strcmp(flash_mount_point, mount_point) == 0 ? ESP_OK : ESP_ERR_INVALID_STATE;
     }
 
+    const bool erased = flash_storage_partition_is_erased();
     esp_vfs_fat_mount_config_t mount_config = {
-        .format_if_mount_failed = flash_storage_partition_is_erased(),
+        .format_if_mount_failed = erased,
         .max_files = FLASH_STORAGE_MAX_FILES,
         .allocation_unit_size = FLASH_STORAGE_ALLOC_UNIT_SIZE,
         .disk_status_check_enable = false,
@@ -99,6 +103,14 @@ esp_err_t flash_storage_mount(const char *mount_point)
                                                      FLASH_STORAGE_PARTITION_LABEL,
                                                      &mount_config,
                                                      &wl_handle);
+    /* ESP_FAIL is FatFs finding no volume it can read. */
+    flash_unrecognized = ret == ESP_FAIL && !erased;
+    if (flash_unrecognized) {
+        strlcpy(flash_status, "unrecognized filesystem", sizeof(flash_status));
+        ESP_LOGW(TAG, "flash at %s: unrecognized filesystem; to erase it: "
+                      "disk format flash --force", mount_point);
+        return ret;
+    }
     if (ret != ESP_OK) {
         flash_storage_set_error_status(ret);
         ESP_LOGW(TAG, "flash mount at %s failed: %s", mount_point, esp_err_to_name(ret));
@@ -142,6 +154,7 @@ esp_err_t flash_storage_format(const char *mount_point)
         FLASH_STORAGE_PARTITION_LABEL,
         &format_config);
     if (ret == ESP_OK) {
+        flash_unrecognized = false;
         snprintf(flash_status, sizeof(flash_status), "formatted at %s", mount_point);
     } else {
         flash_storage_set_error_status(ret);
@@ -189,6 +202,11 @@ uint64_t flash_storage_size_bytes(void)
 {
     const esp_partition_t *partition = flash_storage_partition();
     return partition != NULL ? partition->size : 0;
+}
+
+bool flash_storage_is_unrecognized(void)
+{
+    return flash_unrecognized;
 }
 
 void flash_storage_get_status(char *buffer, size_t len)
