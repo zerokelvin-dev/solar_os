@@ -59,12 +59,17 @@ Mac side: `rnodeconf --autoinstall` (Heltec LoRa32 v4, 915 MHz band); a
 private `rnsd` config with one `RNodeInterface` at 914875000 Hz, 125000 Hz,
 SF8, CR5, 7 dBm, **`share_instance = Yes` on non-default ports** - with
 `share_instance = No` every `rnstatus`/`rnpath` starts its own Reticulum and
-fights `rnsd` for the serial port, and the interface shows Down.
+fights `rnsd` for the serial port, and the interface shows Down. The LXMF peer
+is `scripts/rns_lora_bench_peer.py <configdir> <M9 delivery hash>`: it
+announces as `mac`, sends one opportunistic message, and prints what it
+receives and when its proof comes back.
 
 | Step | Result |
 | --- | --- |
 | M9 announce -> Mac | every one of 5 received; `rnpath -t` shows the M9 one hop away via the RNode |
 | Mac announce -> M9 | every one of 5 received after the driver fix below; `reticulum announces` lists them, 1 hop, -35 dBm, SNR 15 |
+| Mac LXMF message -> M9 | received, in `messages`/`inbox`; delivery proof back at the Mac 2 s later |
+| M9 `messages send ... --allow-untrusted` -> Mac | received by the Mac's LXMF router; M9 shows `Sent: 1 (1 delivered)` |
 | `rnprobe` to `solaros.node` | times out: the M9 receives it (rx counter moves) and sends no proof, which is that destination's proof strategy, not the link |
 
 Found on the bench: the LR1110's packet-parameter payload length is also its
@@ -72,3 +77,8 @@ maximum receive length, and a transmit re-set it to the outgoing size. After
 its own 174-byte announce the M9 took a 131-byte probe and dropped every
 ~193-byte announce. Entering receive now restores the maximum
 (`lr11xx_set_packet_length`, pinned by a driver test).
+
+A reply to a peer discovered only from the air needs `--allow-untrusted`;
+without it the shell reports "resource is busy or not ready", which is the
+generic text for `ESP_ERR_INVALID_STATE` and does not say why. Worth a
+clearer message.

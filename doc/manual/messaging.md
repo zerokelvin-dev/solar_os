@@ -4,7 +4,7 @@ title = "Messaging, contacts, and credential security"
 section = "service"
 summary = "Manage contacts, conversations, trust, and saved credentials"
 aliases = ["contacts.service", "credentials"]
-keywords = "messaging contacts credentials trust endpoint gateway meshcore security"
+keywords = "messaging contacts credentials trust endpoint gateway meshcore reticulum lxmf security"
 packages_any = ["service_contacts", "service_credentials"]
 +++
 # Messaging identities and security
@@ -319,3 +319,8 @@ use the same conversations and trust states as gateway messages; shared-key
 groups remain visibly sender-unverified. A `radio-link` or `espnow-link` job
 started with `chat=on` adds unencrypted, packet-sized Link broadcast and direct
 conversations and discovers source device IDs as Contacts.
+
+The `reticulum` provider carries LXMF messages over a Reticulum network, with
+peers discovered from their `lxmf.delivery` announces. Messages are signed and
+encrypted end to end, and a message whose signature cannot be verified is
+dropped rather than shown. See `reticulum` for its limits.
