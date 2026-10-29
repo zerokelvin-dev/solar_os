@@ -1040,10 +1040,12 @@ requires = ["esp_timer", "heap", "nvs_flash"]
 
 [packages.service_lxmf]
 label = "service.lxmf"
-depends = ["service_contacts", "service_messaging", "service_reticulum"]
+depends = ["service_contacts", "service_crypto", "service_messaging", "service_reticulum"]
 sources = [
   "services/solar_os_lxmf.cpp",
   "services/solar_os_lxmf_format.c",
+  "services/solar_os_lxmf_settings.c",
+  "services/solar_os_lxmf_stamp.c",
 ]
 
 [packages.service_contacts]

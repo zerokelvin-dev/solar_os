@@ -85,6 +85,75 @@ bool solar_os_lxmf_parse_announce(const uint8_t *data,
                                   char *name,
                                   size_t name_len);
 
+/* What a propagation node says of itself in its lxmf.propagation announce. */
+typedef struct {
+    /* It takes messages; a node can announce that it has stopped. */
+    bool active;
+    /* The largest upload it takes, in kilobytes. */
+    uint32_t transfer_limit_kb;
+    /* The stamp cost it asks for, and how far below it it still accepts. */
+    uint32_t stamp_cost;
+    uint32_t stamp_flexibility;
+} solar_os_lxmf_propagation_node_t;
+
+/*
+ * Accepts what LXMF's pn_announce_data_is_valid() accepts: [legacy flag,
+ * timebase, active, transfer limit, sync limit, [stamp cost, flexibility,
+ * peering cost], metadata]. Older nodes announce less and are refused.
+ */
+bool solar_os_lxmf_parse_propagation_announce(
+    const uint8_t *data,
+    size_t len,
+    solar_os_lxmf_propagation_node_t *node);
+
+/*
+ * An upload to a propagation node: [time, [message]], where the message is
+ * the recipient hash, the encrypted rest, and the propagation stamp.
+ */
+size_t solar_os_lxmf_pack_propagation(double timestamp_s,
+                                      const uint8_t *message,
+                                      size_t message_len,
+                                      uint8_t *out,
+                                      size_t out_len);
+
+/* What identifies a message held by a propagation node: its SHA-256. */
+#define SOLAR_OS_LXMF_TRANSIENT_ID_LEN 32U
+/* Errors a propagation node answers "/get" with in place of a list. */
+#define SOLAR_OS_LXMF_SYNC_NO_IDENTITY 0xF0U
+#define SOLAR_OS_LXMF_SYNC_NO_ACCESS 0xF1U
+
+/*
+ * A "/get" request to a propagation node: [wants, haves], and the most the
+ * reply may carry when limit_kb is not zero. Each list is count transient
+ * IDs end to end, and a NULL list packs nil: both nil asks what the node
+ * holds, wants asks for those messages, and haves lets it delete them.
+ */
+size_t solar_os_lxmf_pack_sync_request(const uint8_t *wants,
+                                       size_t want_count,
+                                       const uint8_t *haves,
+                                       size_t have_count,
+                                       uint32_t limit_kb,
+                                       uint8_t *out,
+                                       size_t out_len);
+
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+} solar_os_lxmf_blob_t;
+
+/*
+ * Reads a propagation node's answer to "/get": a list of transient IDs, or
+ * of messages, borrowed from data. Fills up to max items and says how many
+ * there were. A number is an error, given in *error and with no items. False
+ * for anything else.
+ */
+bool solar_os_lxmf_parse_sync_response(const uint8_t *data,
+                                       size_t len,
+                                       solar_os_lxmf_blob_t *items,
+                                       size_t max,
+                                       size_t *count,
+                                       uint32_t *error);
+
 /*
  * Writes a destination hash given as hexadecimal in its canonical form:
  * 32 lowercase digits. Surrounding angle brackets, as Reticulum prints a

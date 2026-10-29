@@ -221,6 +221,151 @@ static void test_normalize_hash(void)
     assert(!solar_os_lxmf_normalize_hash("5c809a43c40e456f6fcf04f4b2909801", out, 32U));
 }
 
+/* The hub's lxmd announce, as msgpack.packb() of what it decodes to. */
+static const uint8_t propagation_hub[] = {
+    0x97, 0xC2, 0xCE, 0x6A, 0xDE, 0x6E, 0x59, 0xC3, 0xCD, 0x01, 0x00, 0xCD,
+    0x28, 0x00, 0x93, 0x10, 0x03, 0x12, 0x80,
+};
+
+static void test_propagation_announce(void)
+{
+    solar_os_lxmf_propagation_node_t node;
+    assert(solar_os_lxmf_parse_propagation_announce(propagation_hub, sizeof(propagation_hub), &node));
+    assert(node.active && node.transfer_limit_kb == 256U);
+    assert(node.stamp_cost == 16U && node.stamp_flexibility == 3U);
+
+    /* A node announcing it has stopped, with metadata. */
+    static const uint8_t stopped[] = {
+        0x97, 0xC2, 0xCE, 0x6A, 0xDE, 0x6E, 0x59, 0xC2, 0xCC, 0x80, 0xCD, 0x28,
+        0x00, 0x93, 0x0D, 0x00, 0x12, 0x81, 0x01, 0xC4, 0x04, 'n', 'a', 'm', 'e',
+    };
+    assert(solar_os_lxmf_parse_propagation_announce(stopped, sizeof(stopped), &node));
+    assert(!node.active && node.transfer_limit_kb == 128U);
+    assert(node.stamp_cost == 13U && node.stamp_flexibility == 0U);
+
+    /* Six elements, as a node from before stamp costs announces: refused,
+     * as LXMF refuses it. */
+    static const uint8_t old[] = {
+        0x96, 0xC2, 0xCE, 0x6A, 0xDE, 0x6E, 0x59, 0xC3, 0xCD, 0x01, 0x00, 0xCD,
+        0x28, 0x00, 0x93, 0x10, 0x03, 0x12,
+    };
+    assert(!solar_os_lxmf_parse_propagation_announce(old, sizeof(old), &node));
+    for (size_t cut = 1; cut < sizeof(propagation_hub); cut++) {
+        assert(!solar_os_lxmf_parse_propagation_announce(propagation_hub, cut, &node));
+    }
+    /* A delivery announce is not a propagation announce. */
+    uint8_t delivery[40];
+    const size_t length = solar_os_lxmf_pack_announce("sol", delivery, sizeof(delivery));
+    assert(!solar_os_lxmf_parse_propagation_announce(delivery, length, &node));
+}
+
+static void test_pack_propagation(void)
+{
+    /* msgpack.packb([1700000000.5, [bytes(range(10))]]) */
+    static const uint8_t reference_10[] = {
+        0x92, 0xCB, 0x41, 0xD9, 0x54, 0xFC, 0x40, 0x20, 0x00, 0x00, 0x91, 0xC4,
+        0x0A, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+    };
+    static uint8_t message[70000];
+    static uint8_t packed[70016];
+    for (size_t i = 0; i < 10; i++) message[i] = (uint8_t)i;
+    size_t length = solar_os_lxmf_pack_propagation(1700000000.5, message, 10, packed, sizeof(packed));
+    assert(length == sizeof(reference_10) && memcmp(packed, reference_10, length) == 0);
+
+    /* The bin header widens with the message, as msgpack's does. */
+    memset(message, 0, sizeof(message));
+    static const uint8_t head_300[] = {0x91, 0xC5, 0x01, 0x2C};
+    length = solar_os_lxmf_pack_propagation(1700000000.5, message, 300, packed, sizeof(packed));
+    assert(length == 314U && memcmp(&packed[10], head_300, sizeof(head_300)) == 0);
+    static const uint8_t head_70000[] = {0x91, 0xC6, 0x00, 0x01, 0x11, 0x70};
+    length = solar_os_lxmf_pack_propagation(1700000000.5, message, 70000, packed, sizeof(packed));
+    assert(length == 70016U && memcmp(&packed[10], head_70000, sizeof(head_70000)) == 0);
+
+    assert(solar_os_lxmf_pack_propagation(1.0, message, 300, packed, 313) == 0U);
+    assert(solar_os_lxmf_pack_propagation(1.0, message, 0, packed, sizeof(packed)) == 0U);
+}
+
+static void test_sync_request(void)
+{
+    uint8_t ids[16 * SOLAR_OS_LXMF_TRANSIENT_ID_LEN];
+    uint8_t packed[700];
+
+    /* msgpack.packb([None, None]): what the node holds. */
+    static const uint8_t list[] = {0x92, 0xC0, 0xC0};
+    size_t length = solar_os_lxmf_pack_sync_request(NULL, 0, NULL, 0, 0, packed, sizeof(packed));
+    assert(length == sizeof(list) && memcmp(packed, list, length) == 0);
+
+    /* msgpack.packb([[a, b], [], 66]) */
+    memset(ids, 0xA1, SOLAR_OS_LXMF_TRANSIENT_ID_LEN);
+    memset(&ids[SOLAR_OS_LXMF_TRANSIENT_ID_LEN], 0xB2, SOLAR_OS_LXMF_TRANSIENT_ID_LEN);
+    length = solar_os_lxmf_pack_sync_request(ids, 2, ids, 0, 66, packed, sizeof(packed));
+    static const uint8_t get_head[] = {0x93, 0x92, 0xC4, 0x20, 0xA1};
+    static const uint8_t get_tail[] = {0xB2, 0xB2, 0x90, 0x42};
+    assert(length == 72U && memcmp(packed, get_head, sizeof(get_head)) == 0);
+    assert(memcmp(&packed[length - sizeof(get_tail)], get_tail, sizeof(get_tail)) == 0);
+    assert(memcmp(&packed[36], (const uint8_t[]){0xC4, 0x20, 0xB2}, 3) == 0);
+
+    /* msgpack.packb([None, [a]]): which it may delete. */
+    length = solar_os_lxmf_pack_sync_request(NULL, 0, ids, 1, 0, packed, sizeof(packed));
+    static const uint8_t ack_head[] = {0x92, 0xC0, 0x91, 0xC4, 0x20, 0xA1};
+    assert(length == 37U && memcmp(packed, ack_head, sizeof(ack_head)) == 0);
+
+    /* Sixteen IDs take an array16, and a limit of 1000 a uint16, as
+     * msgpack.packb([ids, [], 1000]) writes them. */
+    for (size_t i = 0; i < 16; i++) {
+        memset(&ids[i * SOLAR_OS_LXMF_TRANSIENT_ID_LEN], (int)i, SOLAR_OS_LXMF_TRANSIENT_ID_LEN);
+    }
+    length = solar_os_lxmf_pack_sync_request(ids, 16, ids, 0, 1000, packed, sizeof(packed));
+    static const uint8_t wide_head[] = {0x93, 0xDC, 0x00, 0x10};
+    static const uint8_t wide_tail[] = {0x0F, 0x90, 0xCD, 0x03, 0xE8};
+    assert(length == 4U + 16U * 34U + 4U);
+    assert(memcmp(packed, wide_head, sizeof(wide_head)) == 0);
+    assert(memcmp(&packed[length - sizeof(wide_tail)], wide_tail, sizeof(wide_tail)) == 0);
+    assert(solar_os_lxmf_pack_sync_request(ids, 16, ids, 0, 1000, packed, length - 1U) == 0U);
+}
+
+static void test_sync_response(void)
+{
+    solar_os_lxmf_blob_t items[2];
+    size_t count = 0;
+    uint32_t error = 0;
+
+    /* msgpack.packb(0xf0), LXMPeer.ERROR_NO_IDENTITY */
+    static const uint8_t no_identity[] = {0xCC, 0xF0};
+    assert(solar_os_lxmf_parse_sync_response(no_identity, sizeof(no_identity), items, 2, &count, &error));
+    assert(error == SOLAR_OS_LXMF_SYNC_NO_IDENTITY && count == 0U);
+
+    static const uint8_t empty[] = {0x90};
+    assert(solar_os_lxmf_parse_sync_response(empty, sizeof(empty), items, 2, &count, &error));
+    assert(error == 0U && count == 0U);
+
+    /* msgpack.packb([b"\x01\x02\x03", bytes(300), b"\x09"]): more than fit
+     * are counted and left out. */
+    static uint8_t three[1 + 5 + 303 + 3];
+    size_t at = 0;
+    three[at++] = 0x93;
+    three[at++] = 0xC4; three[at++] = 0x03;
+    three[at++] = 0x01; three[at++] = 0x02; three[at++] = 0x03;
+    three[at++] = 0xC5; three[at++] = 0x01; three[at++] = 0x2C;
+    at += 300;
+    three[at++] = 0xC4; three[at++] = 0x01; three[at++] = 0x09;
+    assert(at == sizeof(three));
+    assert(solar_os_lxmf_parse_sync_response(three, sizeof(three), items, 2, &count, &error));
+    assert(error == 0U && count == 3U);
+    assert(items[0].len == 3U && items[0].data == &three[3]);
+    assert(items[1].len == 300U && items[1].data == &three[9]);
+    for (size_t cut = 1; cut < sizeof(three); cut++) {
+        assert(!solar_os_lxmf_parse_sync_response(three, cut, items, 2, &count, &error));
+    }
+
+    /* Nil, as the node answers when it fails, and a list of anything but
+     * bytes, are not answers. */
+    static const uint8_t nil[] = {0xC0};
+    assert(!solar_os_lxmf_parse_sync_response(nil, sizeof(nil), items, 2, &count, &error));
+    static const uint8_t text[] = {0x91, 0xA1, 'x'};
+    assert(!solar_os_lxmf_parse_sync_response(text, sizeof(text), items, 2, &count, &error));
+}
+
 int main(void)
 {
     test_pack();
@@ -228,6 +373,10 @@ int main(void)
     test_stamp();
     test_announce();
     test_normalize_hash();
+    test_propagation_announce();
+    test_pack_propagation();
+    test_sync_request();
+    test_sync_response();
     printf("lxmf_format_test ok\n");
     return 0;
 }
