@@ -24,16 +24,18 @@ static bool map_ring_edge_in_view(const solar_os_map_ring_t *ring,
                                        : ring->point_count;
     for (size_t point = 0U; point < segments; point++) {
         const size_t next = (point + 1U) % ring->point_count;
-        const int32_t lat_a = ring->coordinates[point * 2U];
-        const int32_t lat_b = ring->coordinates[next * 2U];
+        int32_t lat_a;
+        int32_t lat_b;
+        int32_t raw_lon_a;
+        int32_t raw_lon_b;
+        solar_os_map_ring_point(ring, point, &lat_a, &raw_lon_a);
+        solar_os_map_ring_point(ring, next, &lat_b, &raw_lon_b);
         if ((lat_a < lat_min && lat_b < lat_min) ||
             (lat_a > lat_max && lat_b > lat_max)) {
             continue;
         }
-        const int32_t lon_a =
-            solar_os_map_relative_lon(view, ring->coordinates[point * 2U + 1U]);
-        const int32_t lon_b =
-            solar_os_map_relative_lon(view, ring->coordinates[next * 2U + 1U]);
+        const int32_t lon_a = solar_os_map_relative_lon(view, raw_lon_a);
+        const int32_t lon_b = solar_os_map_relative_lon(view, raw_lon_b);
         /* A segment crossing the far meridian arrives inverted, and one of
          * its halves reaches the view from either side. */
         if (map_lon_wraps(lon_a, lon_b)) {
@@ -135,7 +137,8 @@ bool solar_os_map_ring_wanted(const solar_os_map_cull_t *cull,
      * however many pieces there are: a row's far shore, off the screen to
      * one side, is what decides which side of the near one is wet.
      */
-    const bool edge_piece = ring->klass == SOLAR_OS_MAP_CLASS_WATER_EDGE;
+    const bool edge_piece = ring->klass == SOLAR_OS_MAP_CLASS_WATER_EDGE ||
+                            ring->klass == SOLAR_OS_MAP_CLASS_WATER_SEAM;
     const int32_t low = solar_os_map_relative_lon(view, ring->lon_min);
     const int32_t high = solar_os_map_relative_lon(view, ring->lon_max);
     /* A ring straddling the far meridian comes back inverted, and has to be
@@ -154,6 +157,7 @@ bool solar_os_map_ring_wanted(const solar_os_map_cull_t *cull,
             : ring->klass == SOLAR_OS_MAP_CLASS_RAIL     ? SOLAR_OS_MAP_RAIL_MAX_MPP
             : ring->klass == SOLAR_OS_MAP_CLASS_ROAD     ? SOLAR_OS_MAP_ROAD_MAX_MPP
             : ring->klass == SOLAR_OS_MAP_CLASS_ROAD_MINOR ? SOLAR_OS_MAP_ROAD_MINOR_MAX_MPP
+            : ring->klass == SOLAR_OS_MAP_CLASS_STREET   ? SOLAR_OS_MAP_STREET_MAX_MPP
                                                            : 0U;
         if (limit != 0U) {
             if (view->meters_per_col > limit) {
@@ -184,8 +188,11 @@ bool solar_os_map_ring_wanted(const solar_os_map_cull_t *cull,
      *
      * A ring whose edge is nowhere near the view keeps both: the middle of
      * a continent is reliably land however crudely its coast was drawn.
+     * Borders are kept too: a border a little off is still the only one
+     * there is, and a line cannot flood anything.
      */
-    if (cull->coarse &&
+    if (cull->coarse && ring->klass != SOLAR_OS_MAP_CLASS_BOUNDARY &&
+        ring->klass != SOLAR_OS_MAP_CLASS_REGION &&
         map_ring_edge_in_view(ring, view, cull->lat_min, cull->lat_max,
                               cull->lon_half)) {
         return false;
@@ -218,13 +225,16 @@ size_t solar_os_map_project_ring(const solar_os_map_view_t *view,
     span->full_turn = 0U;
 
     for (size_t point = 0U; point < ring->point_count; point++) {
-        const int32_t lat = ring->coordinates[point * 2U];
-        const int32_t lon = ring->coordinates[point * 2U + 1U];
+        int32_t lat;
+        int32_t lon;
+        solar_os_map_ring_point(ring, point, &lat, &lon);
         const bool ends = point == 0U || point + 1U == ring->point_count;
         if (!ends) {
             const int64_t moved =
-                (int64_t)(lat > last_lat ? lat - last_lat : last_lat - lat) +
-                (int64_t)(lon > last_lon ? lon - last_lon : last_lon - lon);
+                (lat > last_lat ? (int64_t)lat - last_lat
+                                : (int64_t)last_lat - lat) +
+                (lon > last_lon ? (int64_t)lon - last_lon
+                                : (int64_t)last_lon - lon);
             if (moved < step) {
                 continue;
             }
@@ -280,7 +290,8 @@ size_t solar_os_map_water_crossings(const solar_os_map_view_t *view,
     solar_os_map_ring_t ring;
     while (solar_os_map_geometry_next(geometry, &cursor, &ring)) {
         bool outline = true;
-        if (ring.klass != SOLAR_OS_MAP_CLASS_WATER_EDGE ||
+        if ((ring.klass != SOLAR_OS_MAP_CLASS_WATER_EDGE &&
+             ring.klass != SOLAR_OS_MAP_CLASS_WATER_SEAM) ||
             !solar_os_map_ring_wanted(cull, view, geometry, &ring, &outline)) {
             continue;
         }
@@ -356,4 +367,68 @@ size_t solar_os_map_close_over_pole(const solar_os_map_view_t *view,
     out[kept].x = x;
     out[kept].y = edge;
     return kept + 1U;
+}
+
+/* How far a marker reaches from its centre, and how far a label sits off it. */
+#define MAP_LABEL_MARKER_HALF 6
+#define MAP_LABEL_OFFSET 8
+
+static bool map_boxes_overlap(int left_a, int top_a, int width_a, int height_a,
+                              int left_b, int top_b, int width_b, int height_b)
+{
+    return left_a < left_b + width_b && left_b < left_a + width_a &&
+           top_a < top_b + height_b && top_b < top_a + height_a;
+}
+
+void solar_os_map_place_labels(solar_os_map_label_t *labels,
+                               size_t count,
+                               const int *markers,
+                               size_t marker_count,
+                               int area_left,
+                               int area_top,
+                               int area_right,
+                               int area_bottom)
+{
+    for (size_t i = 0U; i < count; i++) {
+        solar_os_map_label_t *label = &labels[i];
+        const int w = label->width;
+        const int h = label->height;
+        const int spots[4][2] = {
+            {label->x + MAP_LABEL_OFFSET, label->y - h / 2},
+            {label->x - MAP_LABEL_OFFSET - w, label->y - h / 2},
+            {label->x - w / 2, label->y - MAP_LABEL_OFFSET - h},
+            {label->x - w / 2, label->y + MAP_LABEL_OFFSET},
+        };
+        label->placed = false;
+        for (size_t spot = 0U; spot < 4U && !label->placed; spot++) {
+            const int left = spots[spot][0];
+            const int top = spots[spot][1];
+            if (left < area_left || top < area_top || left + w > area_right ||
+                top + h > area_bottom) {
+                continue;
+            }
+            bool clear = true;
+            for (size_t m = 0U; m < marker_count && clear; m++) {
+                const int mx = markers[m * 2U];
+                const int my = markers[m * 2U + 1U];
+                clear = !map_boxes_overlap(left, top, w, h,
+                                           mx - MAP_LABEL_MARKER_HALF,
+                                           my - MAP_LABEL_MARKER_HALF,
+                                           MAP_LABEL_MARKER_HALF * 2 + 1,
+                                           MAP_LABEL_MARKER_HALF * 2 + 1);
+            }
+            for (size_t j = 0U; j < i && clear; j++) {
+                /* A pixel apart, so neighbouring labels do not read as one. */
+                clear = !labels[j].placed ||
+                        !map_boxes_overlap(left, top, w, h, labels[j].left - 1,
+                                           labels[j].top - 1, labels[j].width + 2,
+                                           labels[j].height + 2);
+            }
+            if (clear) {
+                label->placed = true;
+                label->left = left;
+                label->top = top;
+            }
+        }
+    }
 }

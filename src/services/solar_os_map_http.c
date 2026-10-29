@@ -27,19 +27,24 @@ esp_err_t solar_os_map_answer_event(const solar_os_http_event_t *event,
         answer->too_large = true;
         return ESP_FAIL;
     }
+    if (answer->written == 0U && answer->phase != NULL) {
+        *answer->phase = SOLAR_OS_MAP_PHASE_DOWNLOADING;
+    }
     if (fwrite(event->data, 1U, event->data_len, answer->file) !=
         event->data_len) {
         return ESP_FAIL;
     }
     answer->written += event->data_len;
+    if (answer->received != NULL) {
+        *answer->received = answer->written;
+    }
     return ESP_OK;
 }
 
-static void say(const solar_os_map_download_t *what, const char *doing)
+static void say(const solar_os_map_download_t *what, solar_os_map_phase_t phase)
 {
-    if (what->progress != NULL && what->progress_capacity > 0U) {
-        (void)snprintf(what->progress, what->progress_capacity, "%s %s",
-                       doing, what->name);
+    if (what->phase != NULL) {
+        *what->phase = phase;
     }
 }
 
@@ -66,7 +71,9 @@ esp_err_t solar_os_map_download(const solar_os_map_download_t *what)
         return error;
     }
     solar_os_map_answer_t answer = {.file = fopen(temp, "w+b"),
-                                    .limit = what->limit};
+                                    .limit = what->limit,
+                                    .phase = what->phase,
+                                    .received = what->received};
     if (answer.file == NULL) {
         return ESP_FAIL;
     }
@@ -92,7 +99,7 @@ esp_err_t solar_os_map_download(const solar_os_map_download_t *what)
         .event_handler = solar_os_map_answer_event,
         .user_data = &answer,
     };
-    say(what, "asking for");
+    say(what, SOLAR_OS_MAP_PHASE_REQUESTING);
     solar_os_http_request_t *request = NULL;
     solar_os_http_response_t response = {0};
     error = solar_os_http_request_create(&options, &request);
@@ -110,20 +117,21 @@ esp_err_t solar_os_map_download(const solar_os_map_download_t *what)
         error = ESP_ERR_INVALID_SIZE;
     } else if (error == ESP_OK &&
                (answer.status >= 400 || answer.written == 0U)) {
-        /* 429 and anything from the server's own side mean come back. */
-        error = (answer.status == 429 || answer.status >= 500)
-                    ? ESP_ERR_TIMEOUT
-                    : ESP_FAIL;
+        /* 429 is this address over its share; a 5xx is the server's load. */
+        error = answer.status == 429   ? ESP_ERR_NOT_ALLOWED
+                : answer.status >= 500 ? ESP_ERR_INVALID_RESPONSE
+                                       : ESP_FAIL;
     }
 
     uint8_t *packed = NULL;
     size_t packed_size = 0U;
     if (error == ESP_OK) {
-        say(what, "packing");
+        say(what, SOLAR_OS_MAP_PHASE_PARSING);
         solar_os_inflate_t *reader = NULL;
         error = solar_os_inflate_open(answer.file, &reader);
         if (error == ESP_OK) {
-            error = what->pack(reader, what->klass, &packed, &packed_size);
+            error = what->pack(reader, what->klass, what->pack_context, &packed,
+                               &packed_size);
             solar_os_inflate_close(reader);
         }
         SOLAR_OS_LOGI(TAG, "%s: %u bytes read into %u packed, %s", what->name,
@@ -136,6 +144,7 @@ esp_err_t solar_os_map_download(const solar_os_map_download_t *what)
         return error;
     }
 
+    say(what, SOLAR_OS_MAP_PHASE_WRITING);
     error = solar_os_map_layer_keep(what->name, packed, packed_size);
     solar_os_memory_free(packed);
     if (error != ESP_OK) {

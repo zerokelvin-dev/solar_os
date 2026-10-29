@@ -27,3 +27,23 @@ esp_err_t solar_os_map_osm_read(solar_os_inflate_t *reader,
                                 solar_os_map_class_t klass,
                                 uint8_t **out,
                                 size_t *out_size);
+
+/*
+ * The cell an answer was asked for, when it was asked to be cut to one.
+ * Every run leaving the cell is cut at its border, a lake's shore is closed
+ * along the border where the corners say it lies in water, and each class
+ * is simplified to its own tolerance in metres; zero keeps every vertex.
+ */
+typedef struct {
+    int32_t south;
+    int32_t west;
+    int32_t north;
+    int32_t east;
+    uint16_t tolerance_m[SOLAR_OS_MAP_CLASS_COUNT];
+} solar_os_map_osm_cell_t;
+
+esp_err_t solar_os_map_osm_read_cell(solar_os_inflate_t *reader,
+                                     solar_os_map_class_t klass,
+                                     const solar_os_map_osm_cell_t *cell,
+                                     uint8_t **out,
+                                     size_t *out_size);

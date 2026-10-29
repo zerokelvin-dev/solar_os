@@ -46,8 +46,8 @@
 #define MAP_APP_REPEAT_MAX 3
 /* A cell is worth showing between these sizes: any wider and it is the
  * ground underfoot, any narrower and there is nothing to aim at. */
-#define MAP_APP_CELL_MAX_SCREENS 2
-#define MAP_APP_CELL_MIN_DIVISOR 4
+/* Narrower than this on screen, a cell is too small to aim at. */
+#define MAP_APP_CELL_MIN_PX 20
 
 /*
  * What the frame on the screen was drawn from. A tick finding all of it
@@ -64,7 +64,10 @@ typedef struct {
     uint32_t selected_id;
     size_t path_count;
     bool follow_self;
+    bool labels_hidden;
     bool feedback;
+    /* The progress line, which changes while nothing else does. */
+    char working[64];
     bool valid;
     uint32_t ticks;
 } map_app_painted_t;
@@ -81,19 +84,17 @@ typedef struct {
      * in one word, gathered for the whole frame before any of it is
      * filled. */
     uint32_t *wet;
-    /* The cell under the reticle, and what is known about it. */
-    char cell_file[SOLAR_OS_MAP_LAYER_NAME_MAX];
-    bool cell_kept;
-    bool cell_loaded;
-    /* A fetch runs elsewhere; these notice when it has finished. */
+    /* The cell under the reticle, and what is known about each tier of it. */
+    char cell_name[SOLAR_OS_MAP_LAYER_NAME_MAX];
+    bool tier_kept[SOLAR_OS_MAP_TIER_COUNT];
+    bool tier_loaded[SOLAR_OS_MAP_TIER_COUNT];
+    /* A fetch runs elsewhere; whether this app started it, so a failure is
+     * reported here. */
     bool watching_fetch;
-    uint32_t fetch_generation;
     bool watching_base;
     uint32_t base_generation;
     /* Whether the row was showing work last tick, so its end redraws. */
     bool was_working;
-    /* The cell a fetch was started for, so it can be drawn when it lands. */
-    char fetching[SOLAR_OS_MAP_LAYER_NAME_MAX];
     uint32_t cell_generation;
     size_t count;
     size_t total;
@@ -105,6 +106,7 @@ typedef struct {
     uint32_t meters_per_px;
     bool follow_self;
     bool centered;
+    bool labels_hidden;
     char feedback[64];
     /* When the message stops being shown. A message cleared after one frame
      * was gone before it could be read, which made every refusal invisible
@@ -115,6 +117,9 @@ typedef struct {
 } map_app_state_t;
 
 static void *map_app_state;
+/* The last fetch the app has drawn, kept outside its state so a fetch that
+ * finishes while the app is closed is drawn when it opens. */
+static uint32_t map_app_fetch_seen;
 #define map_app (*(map_app_state_t *)map_app_state)
 
 static uint32_t map_app_now_ms(void)
@@ -186,6 +191,8 @@ static solar_os_gfx_color_t map_app_class_color(const solar_os_gfx_t *gfx,
         return solar_os_gfx_rgb(93, 93, 93);
     case SOLAR_OS_MAP_CLASS_ROAD_MINOR:
         return solar_os_gfx_rgb(116, 116, 116);
+    case SOLAR_OS_MAP_CLASS_STREET:
+        return solar_os_gfx_rgb(139, 139, 139);
     case SOLAR_OS_MAP_CLASS_RAIL:
         return solar_os_gfx_rgb(102, 102, 102);
     case SOLAR_OS_MAP_CLASS_BUILDING:
@@ -535,7 +542,8 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
 
     /* The water goes down first, under the roads, whatever order the
      * pieces of its edge arrived in. */
-    if (geometry->class_rings[SOLAR_OS_MAP_CLASS_WATER_EDGE] != 0U &&
+    if ((geometry->class_rings[SOLAR_OS_MAP_CLASS_WATER_EDGE] != 0U ||
+         geometry->class_rings[SOLAR_OS_MAP_CLASS_WATER_SEAM] != 0U) &&
         map_app_colour(gfx)) {
         map_app_fill_water_edges(gfx, view, geometry, &cull);
     }
@@ -544,7 +552,9 @@ static void map_app_draw_geometry(solar_os_gfx_t *gfx,
     solar_os_map_ring_t ring;
     while (solar_os_map_geometry_next(geometry, &cursor, &ring)) {
         bool outline = true;
-        if (!solar_os_map_ring_wanted(&cull, view, geometry, &ring, &outline)) {
+        /* A seam only closes a shore for the fill; it is not a shore. */
+        if (ring.klass == SOLAR_OS_MAP_CLASS_WATER_SEAM ||
+            !solar_os_map_ring_wanted(&cull, view, geometry, &ring, &outline)) {
             continue;
         }
         solar_os_map_span_t span;
@@ -649,6 +659,11 @@ static void map_app_draw_layers(solar_os_gfx_t *gfx,
             const solar_os_map_geometry_t *geometry = solar_os_map_layer(index);
             if (map_app_layer_in_view(view, geometry)) {
                 solar_os_map_layer_touch(index);
+            } else if (world == 0) {
+                /* An out-of-view cell adds nothing, since it closes its own
+                 * water with WATER_SEAM. World layers are still drawn, as
+                 * the far-shore rule in solar_os_map_project.c needs them. */
+                continue;
             }
             map_app_draw_geometry(gfx, view, geometry);
         }
@@ -679,9 +694,162 @@ static void map_app_draw_point(solar_os_gfx_t *gfx,
     }
     if (chosen) {
         solar_os_gfx_rect(gfx, x - 6, y - 6, 13, 13);
-        solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
-        solar_os_gfx_text(gfx, x + 8, y + 4, point->label);
     }
+}
+
+/* The small font's box, and where its baseline sits in it. */
+#define MAP_APP_LABEL_HEIGHT 9
+#define MAP_APP_LABEL_BASELINE 7
+#define MAP_APP_LABEL_MAX_PX 96
+
+/* What a point is called on the map, or NULL for a point left unlabelled:
+ * your own position is "you", a place you added is its own name, and the
+ * selected point is named whatever it is. */
+static const char *map_app_label_text(const solar_os_places_point_t *point,
+                                      bool chosen)
+{
+    if (point->kind == SOLAR_OS_PLACES_KIND_SELF) {
+        return "you";
+    }
+    if (chosen || strcmp(point->source, SOLAR_OS_PLACES_SOURCE_USER) == 0) {
+        return point->label[0] != '\0' ? point->label : NULL;
+    }
+    return NULL;
+}
+
+/* Cut to the width cap, ending in dots, so one long name cannot cross the
+ * screen. */
+static void map_app_fit_label(solar_os_gfx_t *gfx, const char *text, char *out,
+                              size_t out_len)
+{
+    strlcpy(out, text, out_len);
+    if ((int)solar_os_gfx_text_width(gfx, out) <= MAP_APP_LABEL_MAX_PX) {
+        return;
+    }
+    size_t len = strlen(out);
+    while (len > 0U) {
+        out[--len] = '\0';
+        char cut[SOLAR_OS_PLACES_LABEL_MAX + 4U];
+        (void)snprintf(cut, sizeof(cut), "%s...", out);
+        if ((int)solar_os_gfx_text_width(gfx, cut) <= MAP_APP_LABEL_MAX_PX) {
+            strlcpy(out, cut, out_len);
+            return;
+        }
+    }
+}
+
+typedef struct {
+    size_t point;
+    int x;
+    int y;
+    uint32_t rank;
+} map_app_label_pick_t;
+
+static int map_app_compare_pick(const void *a, const void *b)
+{
+    const uint32_t x = ((const map_app_label_pick_t *)a)->rank;
+    const uint32_t y = ((const map_app_label_pick_t *)b)->rank;
+    return x < y ? -1 : x > y;
+}
+
+/*
+ * The label goes on after every marker, so none sits under it, for the
+ * labelled point nearest the reticle only: the one being aimed at. It sits
+ * to the right of its marker if there is room, otherwise left, above or
+ * below, and is left off if none of those is clear.
+ */
+static void map_app_draw_labels(solar_os_gfx_t *gfx,
+                                const int *markers,
+                                const size_t *marker_points,
+                                size_t marker_count,
+                                int area_top,
+                                int area_bottom)
+{
+    if (map_app.labels_hidden || marker_count == 0U) {
+        return;
+    }
+    map_app_label_pick_t *picks = solar_os_memory_calloc(
+        marker_count, sizeof(*picks), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    solar_os_map_label_t *labels = solar_os_memory_calloc(
+        marker_count, sizeof(*labels), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    char (*texts)[SOLAR_OS_PLACES_LABEL_MAX + 4U] = solar_os_memory_calloc(
+        marker_count, sizeof(*texts), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    if (picks == NULL || labels == NULL || texts == NULL) {
+        solar_os_memory_free(picks);
+        solar_os_memory_free(labels);
+        solar_os_memory_free(texts);
+        return;
+    }
+    const int width = (int)solar_os_gfx_width(gfx);
+    const int cx = width / 2;
+    const int cy = (area_top + area_bottom) / 2;
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    size_t count = 0U;
+    for (size_t m = 0U; m < marker_count; m++) {
+        const solar_os_places_point_t *point = &map_app.points[marker_points[m]];
+        const bool chosen = point->id == map_app.selected_id;
+        const char *text = map_app_label_text(point, chosen);
+        if (text == NULL) {
+            continue;
+        }
+        const int x = markers[m * 2U];
+        const int y = markers[m * 2U + 1U];
+        const int dx = x - cx;
+        const int dy = y - cy;
+        const uint32_t far = (uint32_t)(dx * dx + dy * dy);
+        picks[count] = (map_app_label_pick_t){
+            .point = marker_points[m],
+            .x = x,
+            .y = y,
+            .rank = far,
+        };
+        count++;
+    }
+    qsort(picks, count, sizeof(*picks), map_app_compare_pick);
+    /* One label, the point nearest the reticle: the one being aimed at. */
+    count = count > 1U ? 1U : count;
+    for (size_t i = 0U; i < count; i++) {
+        const solar_os_places_point_t *point = &map_app.points[picks[i].point];
+        map_app_fit_label(gfx,
+                          map_app_label_text(point,
+                                             point->id == map_app.selected_id),
+                          texts[i], sizeof(texts[i]));
+        labels[i] = (solar_os_map_label_t){
+            .x = picks[i].x,
+            .y = picks[i].y,
+            .width = (int)solar_os_gfx_text_width(gfx, texts[i]),
+            .height = MAP_APP_LABEL_HEIGHT,
+        };
+    }
+    solar_os_map_place_labels(labels, count, markers, marker_count, 0, area_top,
+                              width, area_bottom);
+    const bool colour = map_app_colour(gfx);
+    for (size_t i = 0U; i < count; i++) {
+        if (!labels[i].placed) {
+            continue;
+        }
+        const int x = labels[i].left;
+        const int baseline = labels[i].top + MAP_APP_LABEL_BASELINE;
+        solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+        if (colour) {
+            /* An outline rather than a box, so the map shows round it. */
+            solar_os_gfx_text(gfx, x - 1, baseline, texts[i]);
+            solar_os_gfx_text(gfx, x + 1, baseline, texts[i]);
+            solar_os_gfx_text(gfx, x, baseline - 1, texts[i]);
+            solar_os_gfx_text(gfx, x, baseline + 1, texts[i]);
+        } else {
+            solar_os_gfx_fill_rect(gfx, x - 1, labels[i].top, labels[i].width + 2,
+                                   labels[i].height);
+        }
+        solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+        solar_os_gfx_text(gfx, x, baseline, texts[i]);
+    }
+    solar_os_memory_free(picks);
+    solar_os_memory_free(labels);
+    solar_os_memory_free(texts);
 }
 
 /*
@@ -689,26 +857,83 @@ static void map_app_draw_point(solar_os_gfx_t *gfx,
  * the card rather than remembered, but only when the cell under the reticle
  * changes, since panning within one cell asks the same question.
  */
-static bool map_app_cell_is_kept(const char *file)
+static bool map_app_online(void);
+
+static void map_app_tier_file(solar_os_map_tier_t tier, char *file, size_t len)
 {
-    /* Asked again when the cell changes and when a layer comes or goes,
-     * since either changes the answer and neither is frequent. Panning
-     * inside one cell with nothing loading asks nothing. */
+    char name[SOLAR_OS_MAP_LAYER_NAME_MAX];
+    solar_os_map_tier_name(map_app.center_lat_e7, map_app.center_lon_e7, tier,
+                           name, sizeof(name));
+    (void)snprintf(file, len, "%s.bin", name);
+}
+
+/* Asked again when the cell changes and when a layer comes or goes, since
+ * either changes the answer and neither is frequent. Panning inside one
+ * cell with nothing loading asks nothing. The store is asked by name, so
+ * however many maps are kept, one kept is never read as absent. */
+static void map_app_cell_refresh(void)
+{
+    /* Keyed by the finest tier's cell, which names every coarser one. */
+    char cell[SOLAR_OS_MAP_LAYER_NAME_MAX];
+    map_app_tier_file(SOLAR_OS_MAP_TIER_COUNT - 1, cell, sizeof(cell));
     const uint32_t generation = solar_os_map_layer_generation();
-    if (strcmp(file, map_app.cell_file) != 0 ||
-        generation != map_app.cell_generation) {
-        map_app.cell_generation = generation;
-        strlcpy(map_app.cell_file, file, sizeof(map_app.cell_file));
-        /*
-         * Asked of the store by name. Listing the kept maps into an array
-         * first meant only as many could be seen as the array held, so a
-         * cell kept after the twelfth read as absent and a press fetched
-         * it again from a service that had already sent it.
-         */
-        map_app.cell_kept = solar_os_map_layer_is_kept(file);
-        map_app.cell_loaded = solar_os_map_layer_is_loaded(file);
+    if (strcmp(cell, map_app.cell_name) == 0 &&
+        generation == map_app.cell_generation) {
+        return;
     }
-    return map_app.cell_kept;
+    map_app.cell_generation = generation;
+    strlcpy(map_app.cell_name, cell, sizeof(map_app.cell_name));
+    for (int tier = 0; tier < SOLAR_OS_MAP_TIER_COUNT; tier++) {
+        char file[SOLAR_OS_MAP_LAYER_NAME_MAX];
+        map_app_tier_file((solar_os_map_tier_t)tier, file, sizeof(file));
+        map_app.tier_kept[tier] = solar_os_map_layer_is_kept(file);
+        map_app.tier_loaded[tier] = solar_os_map_layer_is_loaded(file);
+    }
+}
+
+/*
+ * The tier a press on the cell would act on: the coarsest one not yet
+ * loaded, if it is drawn at this scale and can be loaded from the card or
+ * fetched over a network. -1 when a press has nothing to do, so nothing
+ * that would not be drawn is ever asked for.
+ */
+static int map_app_cell_width(const solar_os_map_view_t *view,
+                              solar_os_map_tier_t tier)
+{
+    const int32_t size = solar_os_map_tier_cell_e7(tier);
+    int32_t corner_lat = 0;
+    int32_t corner_lon = 0;
+    solar_os_map_cell_corner_sized(map_app.center_lat_e7, map_app.center_lon_e7,
+                                   size, &corner_lat, &corner_lon);
+    int left = 0;
+    int right = 0;
+    int y = 0;
+    solar_os_map_project_raw(view, corner_lat, corner_lon, &left, &y);
+    solar_os_map_project_raw(view, corner_lat, corner_lon + size, &right, &y);
+    return right - left;
+}
+
+static int map_app_next_tier(const solar_os_map_view_t *view, bool *kept)
+{
+    map_app_cell_refresh();
+    for (int tier = 0; tier < SOLAR_OS_MAP_TIER_COUNT; tier++) {
+        if (view->meters_per_col >
+            solar_os_map_tier_max_mpp((solar_os_map_tier_t)tier)) {
+            return -1;
+        }
+        if (map_app.tier_loaded[tier]) {
+            continue;
+        }
+        /* The outline and the press share this, so a cell too small to aim
+         * at is neither outlined nor acted on. */
+        if (map_app_cell_width(view, (solar_os_map_tier_t)tier) <
+            MAP_APP_CELL_MIN_PX) {
+            return -1;
+        }
+        *kept = map_app.tier_kept[tier];
+        return (*kept || map_app_online()) ? tier : -1;
+    }
+    return -1;
 }
 
 /*
@@ -734,46 +959,38 @@ static bool map_app_online(void)
 
 /*
  * The cell the reticle sits in, drawn as the area a map would be fetched or
- * loaded for. It appears only when it has something to offer: a file
- * already kept, or a network to fetch one over. With neither, an outline
- * promising a map that cannot arrive is worse than no outline.
+ * loaded for. It appears only while a press would do something: load a
+ * tier that is kept, or fetch one over a network, and only a tier drawn at
+ * this scale. Otherwise an outline promises a map that will not come.
  */
 static void map_app_draw_cell(solar_os_gfx_t *gfx,
                               const solar_os_map_view_t *view,
                               int area)
 {
-    char name[SOLAR_OS_MAP_CELL_NAME_MAX];
-    solar_os_map_cell_name(map_app.center_lat_e7, map_app.center_lon_e7,
-                           name, sizeof(name));
-    char file[SOLAR_OS_MAP_LAYER_NAME_MAX];
-    (void)snprintf(file, sizeof(file), "%s.bin", name);
-    const bool kept = map_app_cell_is_kept(file);
-    if (!kept && !map_app_online()) {
+    bool kept = false;
+    const int tier = map_app_next_tier(view, &kept);
+    const bool busy = solar_os_map_fetch_busy();
+    if (tier < 0 && !busy) {
         return;
     }
 
+    /* The cell drawn is the one the press would act on, whose size is its
+     * tier's. */
+    const int32_t size =
+        solar_os_map_tier_cell_e7(tier < 0 ? SOLAR_OS_MAP_TIER_BASE
+                                           : (solar_os_map_tier_t)tier);
     int32_t corner_lat = 0;
     int32_t corner_lon = 0;
-    solar_os_map_cell_corner(map_app.center_lat_e7, map_app.center_lon_e7,
-                             &corner_lat, &corner_lon);
+    solar_os_map_cell_corner_sized(map_app.center_lat_e7, map_app.center_lon_e7,
+                                   size, &corner_lat, &corner_lon);
     int left = 0;
     int bottom = 0;
     int right = 0;
     int top = 0;
     solar_os_map_project_raw(view, corner_lat, corner_lon, &left, &bottom);
-    solar_os_map_project_raw(view, corner_lat + SOLAR_OS_MAP_CELL_E7,
-                             corner_lon + SOLAR_OS_MAP_CELL_E7, &right, &top);
+    solar_os_map_project_raw(view, corner_lat + size, corner_lon + size, &right,
+                             &top);
     const int wide = right - left;
-    /*
-     * Shown only while the cell is something you could act on. Wider than a
-     * couple of screens it is the ground underfoot rather than a cell, and
-     * narrower than a quarter of one there is nothing to read inside it and
-     * nothing worth aiming at.
-     */
-    if (wide > (int)view->cols * MAP_APP_CELL_MAX_SCREENS ||
-        wide < (int)view->cols / MAP_APP_CELL_MIN_DIVISOR) {
-        return;
-    }
 
     top += MAP_APP_HEADER_H;
     bottom += MAP_APP_HEADER_H;
@@ -786,29 +1003,6 @@ static void map_app_draw_cell(solar_os_gfx_t *gfx,
     solar_os_gfx_rect(gfx, left, top, wide, bottom - top);
     solar_os_gfx_set_line_style(gfx, SOLAR_OS_GFX_LINE_SOLID);
     solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
-
-    /*
-     * A loaded cell says nothing: it is already on the map, and the map is
-     * the label. The others say what a press would do.
-     */
-    if (map_app.cell_loaded) {
-        return;
-    }
-    const char *action = solar_os_map_fetch_busy() ? "wait"
-                         : kept                     ? "load"
-                                                    : "fetch";
-    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
-    /* Centred on whatever of the cell is on screen, so the word stays put
-     * as the edges run off it. */
-    const int visible_left = left > 0 ? left : 0;
-    const int visible_right = right < (int)view->cols ? right : (int)view->cols;
-    const int visible_top = top > MAP_APP_HEADER_H ? top : MAP_APP_HEADER_H;
-    const int visible_bottom =
-        bottom < MAP_APP_HEADER_H + area ? bottom : MAP_APP_HEADER_H + area;
-    const int width = (int)solar_os_gfx_text_width(gfx, action);
-    const int x = visible_left + (visible_right - visible_left - width) / 2;
-    const int y = visible_top + (visible_bottom - visible_top) / 2;
-    solar_os_gfx_text(gfx, x, y, action);
 }
 
 /* A reticle at the centre, which panning moves the map under. The gap in
@@ -871,56 +1065,87 @@ static void map_app_draw_clock(solar_os_gfx_t *gfx, int baseline, int width)
  */
 static void map_app_draw_empty(solar_os_gfx_t *gfx, int top, int area)
 {
-    const char *lines[2] = {NULL, NULL};
+    const char *title;
+    const char *body;
     if (solar_os_map_base_busy()) {
-        lines[0] = "getting the world";
-        lines[1] = solar_os_map_base_status();
+        title = "Getting the world";
+        body = solar_os_map_base_status();
     } else if (!map_app_online()) {
-        lines[0] = "no world map yet";
-        lines[1] = "connect to wifi to download maps";
+        title = "No world map yet";
+        body = "connect to wifi to download maps";
     } else {
-        lines[0] = "no world map yet";
-        lines[1] = "run map base to download it";
+        title = "No world map yet";
+        body = "run map base to download it";
     }
     const int width = (int)solar_os_gfx_width(gfx);
-    int baseline = top + area / 2 - 4;
-    for (size_t index = 0U; index < 2U; index++) {
-        if (lines[index] == NULL || lines[index][0] == '\0') {
-            continue;
-        }
-        const int text_width = (int)solar_os_gfx_text_width(gfx, lines[index]);
-        int x = (width - text_width) / 2;
-        if (x < 2) {
-            x = 2;
-        }
-        solar_os_gfx_text(gfx, x, baseline, lines[index]);
-        baseline += 11;
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_BOLD_12);
+    int content = (int)solar_os_gfx_text_width(gfx, title);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    const bool has_body = body != NULL && body[0] != '\0';
+    if (has_body && (int)solar_os_gfx_text_width(gfx, body) > content) {
+        content = (int)solar_os_gfx_text_width(gfx, body);
+    }
+    int box_w = content + 16;
+    if (box_w > width - 16) {
+        box_w = width - 16;
+    }
+    const int box_h = has_body ? 38 : 24;
+    const int x = (width - box_w) / 2;
+    const int y = top + (area - box_h) / 2;
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_WHITE);
+    solar_os_gfx_fill_rect(gfx, x, y, box_w, box_h);
+    solar_os_gfx_set_color(gfx, SOLAR_OS_GFX_COLOR_BLACK);
+    solar_os_gfx_rect(gfx, x, y, box_w, box_h);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_BOLD_12);
+    solar_os_gfx_text(gfx, x + 8, y + 16, title);
+    solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
+    if (has_body) {
+        solar_os_gfx_text(gfx, x + 8, y + 31, body);
     }
 }
 
 /*
  * Credit for the data, where the map is drawn rather than in a menu nobody
- * opens. OpenStreetMap's licence asks for it whenever its data is shown,
- * and asks for the word OpenStreetMap specifically; the short form is used
- * when the row is too narrow for the long one.
+ * opens: bottom right, on the scale bar's row.
  *
- * Shown whether or not an OpenStreetMap layer is loaded. The world and
- * border layers are Natural Earth, which is public domain and asks for
- * nothing, so this credits a source the reader may not be looking at;
- * crediting too often is the harmless direction, and a line that comes and
- * goes is worse to read than one that stays.
+ * Which credit depends on what is in view. A fetched cell, or anything else
+ * that is not the world, is taken to be OpenStreetMap, whose licence asks
+ * for credit wherever the data is shown; a layer the reader packed from
+ * somewhere else is credited too, which is the harmless direction. With
+ * only the world in view the credit is Natural Earth's, which is public
+ * domain and asks for none but suggests this wording. Each has a short form
+ * for a row too narrow for the long one.
  *
  * The sign is written as an escape rather than as a byte, so the source
  * stays plain ASCII while the text reaching the display is UTF-8, which is
  * what the font and the drawing calls expect.
  */
-static void map_app_draw_credit(solar_os_gfx_t *gfx, int baseline, int taken)
+static void map_app_draw_credit(solar_os_gfx_t *gfx,
+                                const solar_os_map_view_t *view,
+                                int baseline,
+                                int taken)
 {
+    bool world = false;
+    bool other = false;
+    for (size_t index = 0U; index < solar_os_map_layer_count(); index++) {
+        if (!map_app_layer_in_view(view, solar_os_map_layer(index))) {
+            continue;
+        }
+        if (solar_os_map_layer_pinned(index)) {
+            world = true;
+        } else {
+            other = true;
+        }
+    }
+    if (!world && !other) {
+        return;
+    }
     const int width = (int)solar_os_gfx_width(gfx);
-    const char *credit = "\u00a9 OpenStreetMap contributors";
+    const char *credit = other ? "\u00a9 OpenStreetMap contributors"
+                               : "Made with Natural Earth";
     int text = (int)solar_os_gfx_text_width(gfx, credit);
     if (taken + text + 6 > width) {
-        credit = "\u00a9 OpenStreetMap";
+        credit = other ? "\u00a9 OpenStreetMap" : "Natural Earth";
         text = (int)solar_os_gfx_text_width(gfx, credit);
     }
     if (taken + text + 6 > width) {
@@ -943,7 +1168,7 @@ static void map_app_draw_scale_bar(solar_os_gfx_t *gfx, int bottom)
     solar_os_gfx_line(gfx, 6 + bar, y - 3, 6 + bar, y + 3);
     solar_os_gfx_set_font(gfx, SOLAR_OS_GFX_FONT_SMALL);
     solar_os_gfx_text(gfx, 6 + bar + 5, y + 3, distance);
-    map_app_draw_credit(gfx, y + 3,
+    map_app_draw_credit(gfx, &view, y + 3,
                         6 + bar + 5 + (int)solar_os_gfx_text_width(gfx, distance));
 }
 
@@ -1042,6 +1267,10 @@ static bool map_app_frame_is_current(void)
     solar_os_places_status_t status;
     const uint32_t generation =
         solar_os_places_get_status(&status) == ESP_OK ? status.generation : 0U;
+    const char *working = map_app_working();
+    if (working == NULL) {
+        working = "";
+    }
     const bool same =
         map_app.painted.valid &&
         map_app.painted.center_lat_e7 == map_app.center_lat_e7 &&
@@ -1052,7 +1281,11 @@ static bool map_app_frame_is_current(void)
         map_app.painted.selected_id == map_app.selected_id &&
         map_app.painted.path_count == map_app.path_count &&
         map_app.painted.follow_self == map_app.follow_self &&
-        map_app.painted.feedback == (map_app.feedback[0] != '\0');
+        map_app.painted.labels_hidden == map_app.labels_hidden &&
+        map_app.painted.feedback == (map_app.feedback[0] != '\0') &&
+        strncmp(map_app.painted.working, working,
+                sizeof(map_app.painted.working) - 1U) == 0;
+    strlcpy(map_app.painted.working, working, sizeof(map_app.painted.working));
     map_app.painted.center_lat_e7 = map_app.center_lat_e7;
     map_app.painted.center_lon_e7 = map_app.center_lon_e7;
     map_app.painted.meters_per_px = map_app.meters_per_px;
@@ -1061,9 +1294,34 @@ static bool map_app_frame_is_current(void)
     map_app.painted.selected_id = map_app.selected_id;
     map_app.painted.path_count = map_app.path_count;
     map_app.painted.follow_self = map_app.follow_self;
+    map_app.painted.labels_hidden = map_app.labels_hidden;
     map_app.painted.feedback = map_app.feedback[0] != '\0';
     map_app.painted.valid = true;
     return same;
+}
+
+/*
+ * Every tier of the cell under the reticle that is kept and drawn at this
+ * scale goes on the map without being asked: a press is for fetching, and
+ * a map already on the card only has to be zoomed or panned into.
+ */
+static void map_app_load_kept_tiers(const solar_os_map_view_t *view)
+{
+    /* At most one load per tier, so a layer that loads and is put straight
+     * back by the memory budget cannot keep this frame loading it. */
+    for (int round = 0; round < SOLAR_OS_MAP_TIER_COUNT; round++) {
+        bool kept = false;
+        const int tier = map_app_next_tier(view, &kept);
+        if (tier < 0 || !kept) {
+            return;
+        }
+        char file[SOLAR_OS_MAP_LAYER_NAME_MAX];
+        map_app_tier_file((solar_os_map_tier_t)tier, file, sizeof(file));
+        if (solar_os_map_layer_load_named(file) != ESP_OK) {
+            map_app_say("%s would not load", file);
+            return;
+        }
+    }
 }
 
 static void map_app_render(solar_os_context_t *ctx)
@@ -1076,6 +1334,7 @@ static void map_app_render(solar_os_context_t *ctx)
     const int height = (int)solar_os_gfx_height(gfx);
     const int area = map_app_area_height(gfx);
     const solar_os_map_view_t view = map_app_view(gfx);
+    map_app_load_kept_tiers(&view);
 
     /*
      * Sea under everything, but only where something in view can say where
@@ -1119,6 +1378,13 @@ static void map_app_render(solar_os_context_t *ctx)
     solar_os_gfx_set_line_style(gfx, SOLAR_OS_GFX_LINE_SOLID);
 
     const solar_os_places_point_t *selected = map_app_selected();
+    int *markers = solar_os_memory_calloc(map_app.count + 1U, 2U * sizeof(int),
+                                          SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+                                          "app.map.labels");
+    size_t *marker_points = solar_os_memory_calloc(
+        map_app.count + 1U, sizeof(size_t), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED,
+        "app.map.labels");
+    size_t marker_count = 0U;
     /* Oldest first so the newest position draws on top. */
     for (size_t i = map_app.count; i-- > 0;) {
         const solar_os_places_point_t *point = &map_app.points[i];
@@ -1136,7 +1402,16 @@ static void map_app_render(solar_os_context_t *ctx)
                            (int)col,
                            (int)row + MAP_APP_HEADER_H,
                            selected != NULL && selected->id == point->id);
+        if (markers != NULL && marker_points != NULL) {
+            markers[marker_count * 2U] = (int)col;
+            markers[marker_count * 2U + 1U] = (int)row + MAP_APP_HEADER_H;
+            marker_points[marker_count++] = i;
+        }
     }
+    map_app_draw_labels(gfx, markers, marker_points, marker_count,
+                        MAP_APP_HEADER_H, MAP_APP_HEADER_H + area);
+    solar_os_memory_free(markers);
+    solar_os_memory_free(marker_points);
 
     if (solar_os_map_layer_count() == 0U) {
         map_app_draw_empty(gfx, MAP_APP_HEADER_H, area);
@@ -1395,53 +1670,50 @@ static void map_app_title(solar_os_context_t *ctx, char *buffer, size_t buffer_l
 }
 
 /*
- * A press on the cell under the reticle does the one thing that cell needs:
- * put away what is loaded, load what is kept, and ask OpenStreetMap for a
- * cell that is neither. The asking happens on a task of its own, so the
- * press returns and the map keeps drawing while the answer arrives.
+ * A press on the cell under the reticle adds one tier of detail: the
+ * coarsest tier drawn at this scale that is not on the map yet, loaded
+ * from the card if it is kept and asked of OpenStreetMap if it is not. The
+ * asking happens on a task of its own, one at a time, so the press returns
+ * and the map keeps drawing while the answer arrives.
  */
 static void map_app_cell_press(solar_os_context_t *ctx)
 {
-    char name[SOLAR_OS_MAP_CELL_NAME_MAX];
-    solar_os_map_cell_name(map_app.center_lat_e7, map_app.center_lon_e7,
-                           name, sizeof(name));
+    (void)ctx;
+    if (solar_os_map_fetch_busy()) {
+        map_app_say("already fetching, this takes a minute");
+        return;
+    }
+    const solar_os_map_view_t view = map_app_view(solar_os_context_gfx(ctx));
+    bool kept = false;
+    const int tier = map_app_next_tier(&view, &kept);
+    if (tier < 0) {
+        const bool finer =
+            !map_app.tier_loaded[SOLAR_OS_MAP_TIER_COUNT - 1];
+        map_app_say("%s", map_app_cell_width(&view, SOLAR_OS_MAP_TIER_BASE) <
+                                  MAP_APP_CELL_MIN_PX
+                              ? "zoom in to pick a cell"
+                          : !finer ? "all detail loaded here"
+                          : map_app_online() ? "zoom in for more detail"
+                                             : "more detail needs a network");
+        return;
+    }
     char file[SOLAR_OS_MAP_LAYER_NAME_MAX];
-    (void)snprintf(file, sizeof(file), "%s.bin", name);
-    const bool kept = map_app_cell_is_kept(file);
-
-    if (map_app.cell_loaded) {
-        (void)solar_os_map_layer_unload(file);
-        map_app.cell_file[0] = '\0';
-        map_app_say("%s unloaded", name);
+    map_app_tier_file((solar_os_map_tier_t)tier, file, sizeof(file));
+    if (kept) {
+        const esp_err_t error = solar_os_map_layer_load_named(file);
+        map_app_say("%s %s", file,
+                    error == ESP_OK ? "loaded" : "would not load");
         return;
     }
-    if (!kept) {
-        if (!map_app_online()) {
-            map_app_say("%s needs a network", name);
-            return;
-        }
-        /* Started, not waited for: the answer takes tens of seconds, and
-         * waiting here would stop the map redrawing or being left. */
-        if (solar_os_map_fetch_busy()) {
-            map_app_say("already fetching, this takes a minute");
-            return;
-        }
-        if (solar_os_map_fetch_cell(map_app.center_lat_e7,
-                                    map_app.center_lon_e7) != ESP_OK) {
-            map_app_say("%s", solar_os_map_fetch_status());
-            return;
-        }
-        map_app.fetch_generation = solar_os_map_fetch_generation();
-        map_app.watching_fetch = true;
-        strlcpy(map_app.fetching, file, sizeof(map_app.fetching));
-        map_app_say("fetching %s", name);
+    /* Started, not waited for: the answer takes tens of seconds, and
+     * waiting here would stop the map redrawing or being left. */
+    if (solar_os_map_fetch_cell(map_app.center_lat_e7, map_app.center_lon_e7,
+                                (solar_os_map_tier_t)tier) != ESP_OK) {
+        map_app_say("%s", solar_os_map_fetch_status());
         return;
     }
-
-    const esp_err_t error = solar_os_map_layer_load_named(file);
-    map_app.cell_file[0] = '\0';
-    map_app_say("%s %s", name,
-                   error == ESP_OK ? "loaded" : "would not load");
+    map_app.watching_fetch = true;
+    map_app_say("fetching %s", file);
 }
 
 static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event)
@@ -1476,24 +1748,23 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
             map_app_say("%s", solar_os_map_base_status());
             map_app_forget_frame();
         }
-        if (map_app.watching_fetch &&
-            solar_os_map_fetch_generation() != map_app.fetch_generation) {
-            map_app.watching_fetch = false;
+        if (!solar_os_map_fetch_busy() &&
+            solar_os_map_fetch_generation() != map_app_fetch_seen) {
+            map_app_fetch_seen = solar_os_map_fetch_generation();
             /*
              * One press asked for a map, so one press gets a map: what the
-             * fetch brought back is drawn rather than waiting to be asked
-             * for a second time.
+             * fetch brought back is drawn, wherever the reticle has gone and
+             * whether or not the app was open when it landed.
              */
-            if (map_app.fetching[0] != '\0' &&
-                solar_os_map_layer_is_kept(map_app.fetching) &&
-                solar_os_map_layer_load_named(map_app.fetching) == ESP_OK) {
-                map_app_say("%s loaded", map_app.fetching);
-            } else {
+            const char *kept = solar_os_map_fetch_kept();
+            if (kept[0] != '\0' && solar_os_map_layer_load_named(kept) == ESP_OK) {
+                map_app_say("%s loaded", kept);
+            } else if (map_app.watching_fetch) {
                 map_app_say("%s", solar_os_map_fetch_status());
             }
-            map_app.fetching[0] = '\0';
+            map_app.watching_fetch = false;
             /* Whatever it found, what is on the card has changed. */
-            map_app.cell_file[0] = '\0';
+            map_app.cell_generation--;
             map_app_forget_frame();
         }
         map_app.painted.ticks++;
@@ -1522,19 +1793,23 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         map_app_render(ctx);
         return true;
     case SOLAR_OS_KEY_UP:
-    case 'k':
+    case 'w':
+    case 'W':
         map_app_pan(ctx, 0, 1);
         break;
     case SOLAR_OS_KEY_DOWN:
-    case 'j':
+    case 's':
+    case 'S':
         map_app_pan(ctx, 0, -1);
         break;
     case SOLAR_OS_KEY_LEFT:
-    case 'h':
+    case 'a':
+    case 'A':
         map_app_pan(ctx, -1, 0);
         break;
     case SOLAR_OS_KEY_RIGHT:
-    case 'l':
+    case 'd':
+    case 'D':
         map_app_pan(ctx, 1, 0);
         break;
     case '+':
@@ -1563,14 +1838,19 @@ static bool map_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
     case SOLAR_OS_KEY_F2:
         map_app_go_home(ctx);
         break;
-    case 'd':
-    case 'D':
-        map_app_delete_selected();
-        break;
     case 'r':
     case 'R':
+        map_app_delete_selected();
+        break;
+    case 'g':
+    case 'G':
         map_app_poll_self();
         map_app_refresh();
+        break;
+    case 'l':
+    case 'L':
+        map_app.labels_hidden = !map_app.labels_hidden;
+        map_app_say("labels %s", map_app.labels_hidden ? "hidden" : "shown");
         break;
     default:
         return true;

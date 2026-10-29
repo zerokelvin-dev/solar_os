@@ -27,6 +27,16 @@ void solar_os_memory_free(void *pointer)
  * Reading a packed layer lives beside loading one, and loading one needs
  * storage. Nothing here loads anything, so these only have to exist.
  */
+void *solar_os_memory_realloc(void *pointer,
+                              size_t size,
+                              solar_os_memory_class_t memory_class,
+                              const char *tag)
+{
+    (void)memory_class;
+    (void)tag;
+    return realloc(pointer, size);
+}
+
 bool solar_os_storage_is_mounted(void) { return false; }
 esp_err_t solar_os_storage_default_path(const char *relative_path,
                                         char *buffer,
@@ -131,7 +141,7 @@ static uint8_t *pack_ring(const int32_t *lat_lon,
         write_u32(&coords[i * 8U], (uint32_t)lat_lon[i * 2U]);
         write_u32(&coords[i * 8U + 4U], (uint32_t)lat_lon[i * 2U + 1U]);
     }
-    *out_size = size;
+    *out_size = solar_os_map_geometry_pack(data, size);
     return data;
 }
 
@@ -413,8 +423,9 @@ static void test_road_tiers_come_in_by_scale(void)
     } tiers[] = {
         {SOLAR_OS_MAP_CLASS_HIGHWAY, 100000U, 0U},
         {SOLAR_OS_MAP_CLASS_RAIL, 181U, 256U},
-        {SOLAR_OS_MAP_CLASS_ROAD, 91U, 128U},
+        {SOLAR_OS_MAP_CLASS_ROAD, 256U, 362U},
         {SOLAR_OS_MAP_CLASS_ROAD_MINOR, 45U, 64U},
+        {SOLAR_OS_MAP_CLASS_STREET, 32U, 45U},
     };
     for (size_t t = 0U; t < sizeof(tiers) / sizeof(tiers[0]); t++) {
         size_t size = 0U;
@@ -523,7 +534,7 @@ static uint8_t *pack_rings(const int32_t *const *lat_lon,
         write_u32(&bounds[r * 16U + 8U], (uint32_t)lon_min);
         write_u32(&bounds[r * 16U + 12U], (uint32_t)lon_max);
     }
-    *out_size = size;
+    *out_size = solar_os_map_geometry_pack(data, size);
     return data;
 }
 
@@ -609,6 +620,58 @@ static void test_water_edge_pieces_cross_each_row_evenly(void)
 }
 
 /*
+ * A lake cut by a cell's border is closed along the border by seams, which
+ * the fill counts like any shore: the same square, its east and west sides
+ * now seams, still crosses every row evenly and fills as tall as before.
+ */
+static void test_seams_close_a_cut_lake(void)
+{
+    static const int32_t north[] = {430100000, -790100000, 430100000, -789900000};
+    static const int32_t east[] = {430100000, -789900000, 429900000, -789900000};
+    static const int32_t south[] = {429900000, -789900000, 429900000, -790100000};
+    static const int32_t west[] = {429900000, -790100000, 430100000, -790100000};
+    const int32_t *const rings[] = {north, east, south, west};
+    const uint32_t points[] = {2U, 2U, 2U, 2U};
+    const solar_os_map_class_t klass[] = {
+        SOLAR_OS_MAP_CLASS_WATER_EDGE, SOLAR_OS_MAP_CLASS_WATER_SEAM,
+        SOLAR_OS_MAP_CLASS_WATER_EDGE, SOLAR_OS_MAP_CLASS_WATER_SEAM,
+    };
+    const bool open[] = {true, true, true, true};
+    size_t size = 0U;
+    uint8_t *data = pack_rings(rings, points, klass, open, 4U, &size);
+    solar_os_map_geometry_t geometry;
+    assert(solar_os_map_geometry_parse(data, size, &geometry) == ESP_OK);
+    solar_os_map_view_t view = world_view();
+    view.center_lat_e7 = 430000000;
+    view.center_lon_e7 = -790000000;
+    view.meters_per_col = 100U;
+    solar_os_map_cull_t cull;
+    solar_os_map_cull_prepare(&view, &geometry, &cull);
+    solar_os_map_vertex_t scratch[16];
+    uint32_t crossings[4096];
+    const size_t found = solar_os_map_water_crossings(
+        &view, &geometry, &cull, 10, (int)view.rows, scratch, 16U, crossings,
+        4096U);
+    size_t row_counts[256] = {0};
+    for (size_t i = 0U; i < found; i++) {
+        row_counts[SOLAR_OS_MAP_CROSSING_ROW(crossings[i])]++;
+    }
+    size_t lake_rows = 0U;
+    for (size_t row = 0U; row < view.rows; row++) {
+        assert(row_counts[row] % 2U == 0U);
+        lake_rows += row_counts[row] == 2U;
+    }
+    int x = 0;
+    int north_row = 0;
+    int south_row = 0;
+    solar_os_map_project_raw(&view, 430100000, -790000000, &x, &north_row);
+    solar_os_map_project_raw(&view, 429900000, -790000000, &x, &south_row);
+    const size_t square = (size_t)(south_row - north_row);
+    assert(lake_rows + 1U >= square && lake_rows <= square + 1U);
+    free(data);
+}
+
+/*
  * A piece of a water edge beside the view is kept: the far shore of a row
  * is what decides whether the near side of it is wet, and dropping the
  * piece that holds it would flip every row it crosses.
@@ -661,6 +724,36 @@ static void test_a_water_edge_beside_the_view_is_kept(void)
  * Anything else loses both: a coarse lake outline drawn over a city puts a
  * lake through the middle of it.
  */
+/* A border sampled as coarsely is still drawn: it is the only border there
+ * is, a little off is better than none, and a line cannot flood anything. */
+static void test_a_coarse_border_in_view_is_kept(void)
+{
+    static const int32_t line[] = {
+        420000000, -800000000,
+        420000000, -770000000,
+    };
+    solar_os_map_view_t view = world_view();
+    view.center_lat_e7 = 420000000;
+    view.center_lon_e7 = -785000000;
+    view.meters_per_col = 100U;
+    for (unsigned pass = 0U; pass < 2U; pass++) {
+        const solar_os_map_class_t klass = pass == 0U
+                                               ? SOLAR_OS_MAP_CLASS_BOUNDARY
+                                               : SOLAR_OS_MAP_CLASS_REGION;
+        size_t size = 0U;
+        uint8_t *data = pack_ring(line, 2U, klass, true, 40000U, &size);
+        solar_os_map_geometry_t geometry;
+        solar_os_map_ring_t ring;
+        assert(first_ring(data, size, &geometry, &ring));
+        solar_os_map_cull_t cull;
+        solar_os_map_cull_prepare(&view, &geometry, &cull);
+        assert(cull.coarse);
+        bool outline = true;
+        assert(solar_os_map_ring_wanted(&cull, &view, &geometry, &ring, &outline));
+        free(data);
+    }
+}
+
 static void test_a_coarse_edge_in_view_is_dropped(void)
 {
     /* A ring spanning degrees, from a layer sampled every 40 km. */
@@ -738,6 +831,55 @@ static void test_a_coarse_ring_far_from_its_edges_is_kept(void)
     free(data);
 }
 
+static solar_os_map_label_t label_at(int x, int y)
+{
+    solar_os_map_label_t label = {.x = x, .y = y, .width = 40, .height = 9};
+    return label;
+}
+
+/* Right of the marker when there is room; left when the screen ends. */
+static void test_a_label_goes_right_then_left_at_the_edge(void)
+{
+    solar_os_map_label_t labels[2] = {label_at(100, 100), label_at(310, 50)};
+    const int markers[] = {100, 100, 310, 50};
+    solar_os_map_place_labels(labels, 2U, markers, 2U, 0, 20, 320, 240);
+    assert(labels[0].placed && labels[0].left == 108);
+    assert(labels[1].placed && labels[1].left == 310 - 8 - 40);
+}
+
+/* The first label given wins the spot both want; the second moves. */
+static void test_labels_are_placed_in_priority_order(void)
+{
+    const int markers[] = {100, 100, 100, 104};
+    solar_os_map_label_t labels[2] = {label_at(100, 100), label_at(100, 104)};
+    solar_os_map_place_labels(labels, 2U, markers, 2U, 0, 20, 320, 240);
+    assert(labels[0].placed && labels[0].left == 108);
+    assert(labels[1].placed && labels[1].left == 100 - 8 - 40);
+
+    solar_os_map_label_t swapped[2] = {label_at(100, 104), label_at(100, 100)};
+    solar_os_map_place_labels(swapped, 2U, markers, 2U, 0, 20, 320, 240);
+    assert(swapped[0].left == 108);
+    assert(swapped[1].left == 100 - 8 - 40);
+}
+
+/* A label does not cover another point's marker, labelled or not. */
+static void test_a_label_keeps_off_other_markers(void)
+{
+    const int markers[] = {100, 100, 130, 100};
+    solar_os_map_label_t labels[1] = {label_at(100, 100)};
+    solar_os_map_place_labels(labels, 1U, markers, 2U, 0, 20, 320, 240);
+    assert(labels[0].placed && labels[0].left == 100 - 8 - 40);
+}
+
+/* With every spot off the area, the label is skipped. */
+static void test_a_label_with_no_room_is_skipped(void)
+{
+    const int markers[] = {20, 30};
+    solar_os_map_label_t labels[1] = {label_at(20, 30)};
+    solar_os_map_place_labels(labels, 1U, markers, 1U, 0, 20, 45, 45);
+    assert(!labels[0].placed);
+}
+
 int main(void)
 {
     test_a_ring_crossing_the_far_meridian_stays_whole();
@@ -750,9 +892,15 @@ int main(void)
     test_a_ring_outside_the_view_goes();
     test_a_water_edge_beside_the_view_is_kept();
     test_water_edge_pieces_cross_each_row_evenly();
+    test_seams_close_a_cut_lake();
     test_road_tiers_come_in_by_scale();
     test_a_class_is_crowded_over_its_own_ground();
     test_a_coarse_edge_in_view_is_dropped();
+    test_a_coarse_border_in_view_is_kept();
+    test_a_label_goes_right_then_left_at_the_edge();
+    test_labels_are_placed_in_priority_order();
+    test_a_label_keeps_off_other_markers();
+    test_a_label_with_no_room_is_skipped();
     test_a_coarse_ring_far_from_its_edges_is_kept();
     printf("map_project_test ok\n");
     return 0;

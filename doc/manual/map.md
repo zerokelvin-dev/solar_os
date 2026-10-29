@@ -62,16 +62,40 @@ map fetch n4350w07950
 map fetch 43.6532 -79.3832
 ```
 
-The request asks for water areas, rivers, railways, and roads down to
-tertiary. Residential streets are left out: they cover a third of the screen
-where the arterials cover a tenth, so which ways are fetched matters more
-than where they stop being drawn. The roads that do arrive are packed in
-three tiers - motorways and trunk roads as `highway`, primary and secondary
-as `road`, tertiary as `minor road` - and each tier has a scale it appears
-at, the same in every cell: motorways always, rail from 181 metres a pixel,
-arterials from 91, tertiaries from 45. A regional view keeps the motorways
-by themselves, a city view adds the arterials, and the tertiaries come in
-near street level.
+A cell is fetched a tier at a time, coarsest first, each its own request and
+its own file, so nothing is asked for before it would be drawn. A finer tier
+comes in smaller cells, about a screen wide where it starts to be drawn:
+
+| Tier | Asks for | Cell | Kept as | Drawn from |
+| --- | --- | --- | --- | --- |
+| base | water areas, rivers, railways, motorways down to secondary | 0.25° | `<cell>.bin` | any scale |
+| minor | tertiary roads | 0.25° | `<cell>.minor.bin` | 45 metres a pixel |
+| streets | residential, unclassified and living streets | 0.05° | `<cell>.streets.bin` | 32 metres a pixel |
+
+`map fetch <cell> minor` and `map fetch <cell> streets` ask for the finer
+tiers; without a tier word it fetches the base. Within the base, motorways
+and trunk roads are always drawn, primary and secondary roads from 256
+metres a pixel and rail from 181. Every figure is the same in every cell, so
+neighbouring cells change together. The figures are the map's own Mercator
+scale; the scale bar shows ground distance, which is smaller away from the
+equator (256 reads as about 185 m/px at Toronto).
+
+Each answer is cut to its cell by the server, so a lake as large as Lake
+Ontario sends only the shore inside the cell rather than all of it. The
+base also asks which water areas hold each corner of the cell. A shore the
+border cut is closed along the border wherever it lies in water: starting
+from the south-west corner and going round, the border changes between
+water and land at every shore that meets it, and the other three corners
+check the walk. A walk they disagree with is left out, so a cell is never
+flooded on a guess.
+
+What is kept is simplified to what the tier is drawn at: water, roads and
+the minor roads to within 10 metres, rail to 15 and streets to 5. The
+minor and street tiers are asked for without their tags, since the tier
+already says what they are. Measured on the Toronto cell `n4350w07950`, the
+water alone comes down from about 810 KB to 240 KB, and a quarter-degree of
+streets that was about 1.6 MB arrives as twenty-five cells of a few tens of
+kilobytes.
 
 The answer is asked for deflated. A dense cell is about 13 MB of JSON and
 under 2 MB on the wire, which is the difference between a fetch that
@@ -81,11 +105,58 @@ means rather than the map: it is inflated as it is packed and then deleted.
 What is kept is the packed geometry, a tenth of the JSON, which needs no
 inflating to draw.
 
-The answer arrives over tens of seconds. `map fetch` waits for it and prints
-what happened; one fetch runs at a time, and a second one while the first is
-running is refused. An answer larger than 8 MB deflated is refused rather
-than stored, which is what `too much data for one cell` means. A cell nobody
-has mapped is reported as `nothing mapped here` and nothing is written.
+The query asks Overpass for at most 60 seconds of work. The answer then
+takes longer to arrive than to make, over a minute for a dense cell, so the
+device waits up to three minutes for all of it. `map fetch` waits for it and prints what
+happened; one fetch runs at a time, and a second one while the first is
+running is refused.
+
+While it runs, the row under the map says what it is doing and to which
+tier of which cell, `<verb> <cell> <tier>`, where the tier is `map`,
+`roads` or `streets`:
+
+| Line | What is happening |
+| --- | --- |
+| `requesting n4350w07950 map` | Overpass is working on the query; nothing has arrived yet |
+| `downloading n4350w07950 map 420 KB` | the answer is arriving, over a minute for a dense cell; the count is what has arrived so far, and a count that stops moving is a stalled link |
+| `parsing n4350w07950 map` | reading the answer into packed geometry |
+| `writing n4350w07950 map` | keeping the packed layer on the card |
+| `fetched n4350w07950 map` | done; the app draws the tier straight away |
+
+## When a fetch fails
+
+A fetch that fails says why on the same row, and writes nothing to the
+card. Nothing is retried for you and nothing holds you back from trying
+again: each message says whether pressing Enter again soon is worth it.
+
+| Message | What happened | What to do |
+| --- | --- | --- |
+| `openstreetmap busy, try again` | Overpass answered `504` or another `5xx`: too loaded to take the query | Try again; a few seconds later often works |
+| `openstreetmap rate limit, wait a minute` | Overpass answered `429`: this address has used its query slots | Wait about a minute before the next fetch |
+| `openstreetmap timed out, try again` | the whole answer had not arrived within three minutes | Check the network, then try again |
+| `nothing mapped here` | the answer held no geometry for this tier | Nothing; there is nothing to draw here |
+| `too much data for one cell` | the answer passed 8 MB deflated | Nothing; the cell is refused rather than stored |
+| `no storage for maps` | no card is mounted | Insert or mount a card |
+| `could not fetch <name>` | anything else, such as a failed connection or a malformed answer | `log show` has the detail |
+
+Overpass gives each address two query slots, and a finished query holds its
+slot for a cooldown that grows with how heavy the query was. A `429` means
+both are cooling down. The refusal itself does not say for how long, so the
+message does not either. Overpass reports it for the calling address at
+<https://overpass-api.de/api/status>, which a browser on the same network
+can read:
+
+```text
+Rate limit: 2
+1 slots available now.
+Slot available after: 2026-10-06T20:27:16Z, in 8 seconds.
+```
+
+A `504` is not about your usage: with slots free, a busy server still
+refuses a query it cannot fit in after about ten seconds.
+
+The HTTP status and the byte count of every answer go to the log, tagged
+`map_http`, where `log show` finds them.
 
 A fetched cell lands in `.map/layers/<cell>.bin` and is not loaded by the
 fetch. Each element's tags decide its class, so water, railways and roads
@@ -93,11 +164,13 @@ are coloured as themselves: the tags arrive after the geometry, so the class
 is filled in when the element closes. Anything the query does not explain
 falls back to road.
 
-In the app, pressing Enter fetches the cell under the reticle, which needs a
-network path. The word drawn inside the cell outline says what a press will
-do: `fetch` when there is no file, `load` when there is one, and `wait`
-while a fetch is running. A cell already drawn says nothing, because the
-map is its label; pressing it puts it away.
+In the app, a tier that is already on the card loads by itself as soon as
+the cell under the reticle is zoomed or panned to a scale that draws it. A
+press of Enter is for the rest: it fetches the coarsest tier drawn at the
+current scale that is not on the card yet. Fetching needs a network path,
+and runs one at a time. The cell is outlined only while a press would fetch
+something. With every tier drawn at this scale on the map, zoom
+in for the next; `map unload` puts a tier away.
 
 ## The world, the first time
 
@@ -138,11 +211,11 @@ and one listing shows 64 of them, saying how many more there are. Loading
 by name or by number walks the directory, so a map is never out of reach
 for being kept late.
 
-Twelve layers may be loaded at once, but what actually runs out is memory,
-not slots: a world map is about 0.6 MiB of geometry, a quarter-degree cell
-of a dense city 1.2 to 1.7 MiB, and a rural one a fraction of that. Five
-mebibytes may be held in total, which `map status` reports beside the
-count. Loading past that puts away whichever layer has gone longest
+Thirty-two layers may be loaded at once, but what actually runs out is
+memory, not slots: the world is about 120 KiB of geometry, a quarter-degree
+base cell of a dense city around 300 KiB, and a rural one a fraction of
+that. Five mebibytes may be held in total, which `map status` reports
+beside the count. Loading past that puts away whichever layer has gone longest
 without being on screen, so panning across a city loads cells as they
 come into view and drops the ones behind without anybody managing it. A
 world layers are pinned, so they are never the ones put away, and they
@@ -181,7 +254,12 @@ already loaded replaces it rather than drawing it twice.
 
 Two formats are read, told apart by the file's first bytes rather than by
 its name. A packed layer (`.bin`) costs no parsing at all: its header says
-how many rings and points follow, so its size is read out of it. A GeoJSON
+how many rings and points follow, so its size is read out of it. A point is
+two 16-bit offsets from its ring's corner, about a metre apart across a
+whole cell and exact for a ring a few hundred metres wide. A kept layer in
+an older packed format is deleted the first time it fails to load, so the
+next press fetches it again rather than the card holding a map that never
+draws. A GeoJSON
 file is parsed by a character scanner rather than into a document, so a
 large file costs only its geometry in memory; polygons and lines are both
 read. A GeoJSON file carries no class of its own, so `map load` tags every
@@ -267,18 +345,29 @@ curl -o /sdcard/toronto.bin http://192.168.1.10:8000/toronto.bin
 map load /sdcard/toronto.bin
 ```
 
+
+## Labels
+
+One label is shown at a time: for the point nearest the reticle, among
+your own position (labelled `you`), the places you added with `places add`,
+and the selected point. Panning brings another point's name up as it comes
+under the reticle. The label sits to the right of its marker if there is
+room, otherwise left, above or below, and a long name is cut to fit. `l`
+hides or shows it.
+
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| Arrows, `h` `j` `k` `l` | Pan an eighth of a screen |
+| Arrows, `w` `a` `s` `d` | Pan an eighth of a screen |
 | `+` `-` | Zoom in and out |
-| `Enter` | Fetch, load or unload the cell under the reticle |
+| `Enter` | Add the next tier of the cell under the reticle |
 | `Tab`, `n`, `p` | Select the next or previous point |
 | `c` | Centre on the selected point, and follow it if it is your position |
 | `f` | Fit every point on screen |
-| `r` | Read the GNSS position now |
-| `d` | Delete the selected point |
+| `g` | Read the GNSS position now |
+| `r` | Delete the selected point |
+| `l` | Hide or show labels |
 | `q`, `Esc` | Leave the app |
 
 The sea is drawn as a pale ground under everything, so land drawn over it
@@ -287,10 +376,9 @@ inside a ring, a node is an open circle, and a waypoint is a cross. A small
 cross sits at the centre of the view: panning moves the map under it, so it
 is what you line up with a target when working down from a zoomed-out view.
 Zooming holds the centre, so a target stays under the cross as you go in.
-The cell the reticle sits in is outlined with a dashed line while it is
-something you could act on — a file already kept, or a network to fetch one
-over — and while it is between a quarter of the screen and a couple of
-screens wide. The selected point is boxed and labelled, and the row under
+The cell the reticle sits in is outlined with a dashed line while a press
+would load or fetch a tier of it, and while it is at least 20 pixels wide;
+smaller than that it is too small to aim at, and a press does nothing. The selected point is boxed and labelled, and the row under
 the map gives its coordinates, and the distance and bearing from your own
 position when one is known. With nothing selected that row gives the
 reticle's own position and the scale.
@@ -300,8 +388,8 @@ reticle's own position and the scale.
 ```text
 map                                  open the app
 map status                           layer count and bytes against the budget
-map fetch <cell>                     ask OpenStreetMap for one cell
-map fetch <latitude> <longitude>     the cell holding a position
+map fetch <cell> [minor|streets]     ask OpenStreetMap for one tier of a cell
+map fetch <latitude> <longitude>     the base of the cell holding a position
 map base                             download the world map, once
 map stored                           the maps kept on the card, with indices
 map load </path|cell|index|name>     load a map and keep a copy of it
@@ -334,11 +422,11 @@ A cell fetched by the device, and any layer built with
 [Overpass API](https://overpass-api.de/), and is licensed under the
 [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
 That licence asks for credit whenever the data is shown, so the application
-draws `© OpenStreetMap contributors` over the map whenever the map is on
-screen, whatever is loaded, shortened to `© OpenStreetMap` when the row is
-too narrow for the long form. Crediting too often is the harmless
-direction, and a line that comes and goes is worse to read than one that
-stays. The full terms are at
+draws `© OpenStreetMap contributors` over the map whenever a layer other
+than the world is in view, shortened to `© OpenStreetMap` when the row is
+too narrow for the long form. A layer brought from somewhere else is
+credited the same way: a layer carries no record of where it came from, and
+crediting too often is the harmless direction. The full terms are at
 <https://www.openstreetmap.org/copyright>, and the
 [attribution guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)
 say what is expected:
@@ -352,18 +440,17 @@ Overpass is a free service run by volunteers, with a stated limit of about
 10,000 requests and 1 GB a day across all of a user's traffic. It asks that
 callers not stitch bounding boxes together to scrape wide areas, and not
 point production applications at the public instance. That is why a fetch
-takes one cell, only when somebody asks for it, and keeps what it gets:
-`429` is Overpass rate limiting this address and `504` is the query giving
-up; both mean come back later rather than ask again now. The refusal carries
-a line of plain text saying which limit was hit, and that line is what the
-app shows, as `openstreetmap busy, try later`. The status and the byte
-count go to the log rather than the screen, where `log show` will find
-them: a status number is nothing a reader can act on.
+takes one cell, only when somebody asks for it, and keeps what it gets.
+What each refusal means is under "When a fetch fails" above.
 
-Layers built with `scripts/build_map_basemap.py` come from
+The world, whether fetched with `map base` or built with
+`scripts/build_map_basemap.py`, comes from
 [Natural Earth](https://www.naturalearthdata.com/), which is public domain:
 
 > All versions of Natural Earth raster and vector map data found on this
 > website are in the public domain.
 
-Nothing need be credited for them.
+Its [terms of use](https://www.naturalearthdata.com/about/terms-of-use/) say
+crediting the authors is unnecessary and suggest a wording for anyone who
+wishes to. The application uses it: with only the world in view it draws
+`Made with Natural Earth`, shortened to `Natural Earth` on a narrow row.
