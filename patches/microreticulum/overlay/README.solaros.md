@@ -39,7 +39,9 @@ merge, the pins can move back to upstream. The microReticulum fork also adds:
 The overlay replaces these files:
 
 - `overlay/microReticulum/Cryptography/`: mbedtls backends for the hashes, HMAC,
-  HKDF, AES, Ed25519, X25519 and the random source.
+  HKDF, AES, Ed25519 and X25519, and a random source that draws from SolarOS's
+  generator in `src/services/solar_os_reticulum_random.c`.
+- `overlay/RNG.h`: seeds that generator when the Reticulum instance is made.
 - `overlay/microReticulum/Utilities/Memory.{h,cpp}`: no TLSF pools; containers use
   `operator new`; heap statistics come from `heap_caps_*`.
 - `overlay/microReticulum.h`: umbrella header without Provisioning.
@@ -52,8 +54,9 @@ The overlay replaces these files:
 - The X25519 overlay uses `crypto/refc/x25519.h` from SolarOS's
   `components/wireguard_lwip`, so the compiling component must require it.
 - `esp_fill_random()` is a true random source only while Wi-Fi or Bluetooth is
-  on, or inside `bootloader_random_enable()`. Identity and link keys must be
-  made under one of those.
+  on, or inside `bootloader_random_enable()`. SolarOS's generator is a CTR-DRBG
+  seeded under one of those (the SAR ADC entropy source, with ADC reads held
+  off, when the radio is off), so keys are not pseudo-random in LoRa-only use.
 - The FAT mount must allow at least 8 open files: each store keeps an index and an
   active segment open, plus one transient descriptor per read.
 

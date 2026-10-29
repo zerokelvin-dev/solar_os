@@ -196,6 +196,13 @@ bool solar_os_wifi_enabled_for_current_boot(void)
     return wifi_enabled_for_current_boot;
 }
 
+bool solar_os_wifi_radio_started(void)
+{
+    /* Unlocked: the lock is held through scans and starts, and a stale
+     * answer is no worse than one that changes just after it is read. */
+    return *(volatile bool *)&wifi_started;
+}
+
 bool solar_os_wifi_enabled_for_next_boot(void)
 {
     (void)solar_os_wifi_enabled_for_current_boot();

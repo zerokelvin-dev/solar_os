@@ -4,7 +4,7 @@
 
 #include "../../../meshcore/ed25519/ed_25519.h"
 
-#include <esp_random.h>
+#include "Random.h"
 
 #include <memory>
 #include <stdexcept>
@@ -58,7 +58,7 @@ namespace RNS { namespace Cryptography {
 				_privateKey = privateKey;
 			}
 			else {
-				esp_fill_random(_privateKey.writable(32), 32);
+				_privateKey = random(32);
 			}
 			ed25519_create_keypair(_publicKey.writable(32), _expandedKey.writable(64), _privateKey.data());
 		}
