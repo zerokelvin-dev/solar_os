@@ -102,7 +102,7 @@ from shell and Chat input history. `gateway` commands address the default Gatewa
 `job start gateway-sync` maintains all enabled Gateway instances.
 
 All installed backends expose setup through the same class registry. IRC accepts
-`HOST PORT NICK`, MeshCore accepts `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]`,
+`HOST PORT NICK`, LXMF accepts an optional `DISPLAY_NAME`, MeshCore accepts `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]`,
 and Link accepts `TRANSPORT`. The `solaros.messages` Python and Lua submodules
 expose `classes()`, `add(class, name, settings)`, and `configure(instance, settings)`;
 settings are bounded lists/tables in shell argument order. Enumeration excludes

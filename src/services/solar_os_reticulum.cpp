@@ -28,6 +28,10 @@ extern "C" {
 #include "solar_os_reticulum_lora.h"
 #include "solar_os_reticulum_random.h"
 #include "solar_os_reticulum_tcp.h"
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+#include "solar_os_lxmf.h"
+#include "solar_os_lxmf_internal.h"
+#endif
 
 namespace {
 
@@ -72,6 +76,7 @@ void set_start_error(const char *format, ...)
     vsnprintf(start_error, sizeof(start_error), format, args);
     va_end(args);
 }
+bool interface_was_online = false;
 solar_os_reticulum_status_t counters = {};
 char host[SOLAR_OS_RETICULUM_HOST_MAX + 1U] = {};
 uint16_t port = 0;
@@ -585,6 +590,14 @@ esp_err_t solar_os_reticulum_start(const solar_os_reticulum_config_t *config)
         }
         if (identity_new) {
             identity_new = false;
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+            /* A first start: give the node somewhere to receive messages. */
+            const esp_err_t lxmf_error = solar_os_lxmf_create_default();
+            if (lxmf_error != ESP_OK) {
+                SOLAR_OS_LOGW(TAG, "no LXMF instance: %s",
+                              esp_err_to_name(lxmf_error));
+            }
+#endif
         }
         destination = RNS::Destination(
             identity,
@@ -604,6 +617,10 @@ esp_err_t solar_os_reticulum_start(const solar_os_reticulum_config_t *config)
             RNS::Transport::register_interface(tcp_interface);
             tcp_interface.start();
         }
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+        (void)solar_os::lxmf::attach(identity);
+        interface_was_online = false;
+#endif
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "start failed: %s", failure.what());
         set_start_error("start failed: %s", failure.what());
@@ -645,6 +662,9 @@ esp_err_t solar_os_reticulum_stop(void)
         return ESP_OK;
     }
     running = false;
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    solar_os::lxmf::detach();
+#endif
     try {
         RNS::Transport::persist_data();
     } catch (const std::exception &failure) {
@@ -675,6 +695,15 @@ void solar_os_reticulum_loop_once(void)
     }
     try {
         reticulum.loop();
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+        /* An announce before an interface is up has nowhere to go. */
+        const bool online = any_interface_online();
+        if (online && !interface_was_online) {
+            solar_os::lxmf::request_announce();
+        }
+        interface_was_online = online;
+        solar_os::lxmf::tick();
+#endif
     } catch (const std::exception &failure) {
         SOLAR_OS_LOGE(TAG, "loop exception: %s", failure.what());
         counters.exceptions++;
