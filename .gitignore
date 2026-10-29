@@ -102,3 +102,5 @@ tests/host/ssd1306_named_bus_test
 /tests/host/sc2_vendor_*.o
 /protocol/sc2/tools/__pycache__/
 /protocol/sc2/build/
+tests/host/reticulum_hdlc_test
+tests/host/reticulum_lora_frame_test

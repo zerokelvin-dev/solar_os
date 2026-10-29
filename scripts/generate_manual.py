@@ -86,6 +86,7 @@ DERIVED_ALIAS_OWNERS = {
     ("command.link", "link"): "link",
     ("command.meshcore", "meshcore"): "meshcore",
     ("command.motor", "motor"): "motor",
+    ("command.reticulum", "reticulum"): "reticulum",
     ("command.mqtt", "mqtt"): "network",
     ("command.network", "network"): "network",
     ("command.neopixel", "neopixel"): "expansion",
@@ -120,6 +121,7 @@ DERIVED_ALIAS_OWNERS = {
     ("job.osc", "osc"): "osc",
     ("job.pocsag", "pocsag"): "command.pocsag",
     ("job.radio-link", "radio-link"): "link",
+    ("job.reticulum", "reticulum"): "reticulum",
 }
 SECTION_INFO = {
     "concept": (10, "Getting started"),
