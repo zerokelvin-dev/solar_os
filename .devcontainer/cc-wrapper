@@ -1,0 +1,32 @@
+#!/bin/sh
+# cc/c++ wrapper for host tests on Debian bookworm.
+#  - GCC by default (tests use GCC-only flags and -fstack-usage output).
+#  - -fsanitize=address builds go to clang 14: on arm64 kernels with 39-bit
+#    virtual addresses (Raspberry Pi, among others) GCC's ASan aborts at
+#    startup. Sanitized shared libraries (loaded into Python via ctypes) get
+#    the shared runtime, found via rpath, like GCC does by default.
+#  - Links get strlcpy/strlcat, which glibc 2.36 lacks (pulled in only when
+#    a program references them).
+case "$(basename "$0")" in
+  c++) gnu=/usr/bin/g++; llvm=/usr/bin/clang++ ;;
+  *)   gnu=/usr/bin/gcc; llvm=/usr/bin/clang ;;
+esac
+asan=0 shared=0 link=1
+for a in "$@"; do
+  case "$a" in
+    -fsanitize=*address*) asan=1 ;;
+    -shared) shared=1 ;;
+    -c|-S|-E|-M|-MM) link=0 ;;
+  esac
+done
+extra=""
+# Via -Wl so a -x <lang> earlier on the line does not apply to it.
+[ "$link" = 1 ] && extra="-Wl,/usr/local/lib/libstrl.a"
+if [ "$asan" = 1 ]; then
+  if [ "$shared" = 1 ]; then
+    rt=$(dirname "$("$llvm" -print-file-name=libclang_rt.asan-$(uname -m).so)")
+    exec "$llvm" "$@" -shared-libsan "-Wl,-rpath,$rt" $extra
+  fi
+  exec "$llvm" "$@" $extra
+fi
+exec "$gnu" "$@" $extra

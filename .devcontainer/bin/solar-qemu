@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Boot a built SolarOS image in Espressif's QEMU, serial console on stdio.
+#   solar-qemu [env] [extra qemu args...]     (build first: pio run -e env)
+# Quit with Ctrl-A X. QEMU emulates the SoC, flash, PSRAM and UART only:
+# no board display, keyboard, radio, SD card or Wi-Fi.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+env=${1:-solar_term}; shift || true
+build=.pio/build/$env
+cfg=$build/config/sdkconfig.json
+[[ -f $build/firmware.factory.bin && -f $cfg ]] || { echo "no build for $env: run pio run -e $env" >&2; exit 1; }
+
+get() { jq -r --arg k "$1" '.[$k] // empty' "$cfg"; }
+target=$(get IDF_TARGET)
+flash_mb=$(get ESPTOOLPY_FLASHSIZE); flash_mb=${flash_mb%MB}
+
+case $target in
+  esp32|esp32s3) qemu=qemu-system-xtensa ;;
+  esp32c3)       qemu=qemu-system-riscv32 ;;
+  *) echo "QEMU has no machine for $target" >&2; exit 1 ;;
+esac
+
+# QEMU wants the whole flash chip: pad the factory image with erased bytes.
+img=$build/qemu-flash.bin
+python3 - "$build/firmware.factory.bin" "$img" "$flash_mb" <<'PY'
+import sys
+src, dst, mb = sys.argv[1], sys.argv[2], int(sys.argv[3])
+data = open(src, "rb").read()
+size = mb << 20
+assert len(data) <= size, "image larger than flash"
+open(dst, "wb").write(data + b"\xff" * (size - len(data)))
+PY
+
+args=(-nographic -machine "$target" -drive "file=$img,if=mtd,format=raw")
+# PSRAM, if the build expects it (QEMU tops out at 32 MB; 8 MB is typical).
+[[ $(get SPIRAM) == true ]] && args+=(-m 8M)
+# Same as idf.py qemu: the emulated timer group watchdog fires spuriously.
+[[ $target != esp32c3 ]] && args+=(-global "driver=timer.$target.timg,property=wdt_disable,value=true")
+
+echo "$qemu ${args[*]} $*" >&2
+exec "$qemu" "${args[@]}" "$@"
