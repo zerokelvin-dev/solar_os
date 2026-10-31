@@ -12,9 +12,12 @@ driver changes need hardware-in-the-loop evidence (see README "Contributing").
 ## Environment
 
 Work happens in the dev container (`.devcontainer/`). Everything below is
-installed there. There is no serial device in the container by default, and
-no board attached: you can build and run host tests, but not
-flash or run HIL tests unless the user passes a device through.
+installed there. On Linux hosts every USB serial device is visible in the
+container, hot-plugged ones included (host `/dev` is mounted; ttyUSB, ttyACM
+and raw USB are allowed). The host may have other radios attached: list
+them with `pio device list` or `ls -l /dev/serial/by-id/`, and always flash
+with an explicit `--upload-port /dev/serial/by-id/...` the user confirmed,
+never PlatformIO's auto-detect.
 
 QEMU (Espressif's fork, `qemu-system-xtensa`/`-riscv32`) is installed and
 `solar-qemu ENV` boots a build's flash image, but the shipped targets log to
@@ -47,8 +50,8 @@ solar-qemu ENV                            # boot ENV's last build in QEMU (UART0
 - Known failing on upstream main v.4.17.3 too (not environment problems):
   `test_agent_reference`, `test_inference`, `test_ppp_sdkconfig`,
   `test_rtspd_job`, `test_script_net_bindings`.
-- `tests/hil/` scripts talk to a real device over serial/network. Don't run
-  them without a board.
+- `tests/hil/` scripts talk to a real device over serial/network. Ask
+  before running them.
 
 ## Layout
 

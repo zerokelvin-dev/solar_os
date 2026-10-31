@@ -17,9 +17,21 @@
   "remoteEnv": {
     "PATH": "${containerEnv:PATH}:${containerWorkspaceFolder}/.devcontainer/bin"
   },
-  // No serial devices are passed through by default: flash from the host, or
-  // add e.g. "--device=/dev/ttyACM1" here for the board you mean to flash.
-  "runArgs": [],
+  // USB boards pass through automatically, including ones plugged in later.
+  // Linux hosts only: Docker Desktop (macOS/Windows) has no USB passthrough.
+  "runArgs": [
+    // Host /dev, so devices and /dev/serial/by-id names appear live.
+    "--volume=/dev:/dev",
+    // Which device types the container may open:
+    "--device-cgroup-rule=c 188:* rmw", // ttyUSB: CH340/CP210x/FTDI bridges
+    "--device-cgroup-rule=c 166:* rmw", // ttyACM: ESP32-S3 native USB, CDC
+    "--device-cgroup-rule=c 189:* rmw", // raw USB, for JTAG/OpenOCD
+    // Serial port groups, by host distro:
+    "--group-add=20", // dialout (Debian, Ubuntu)
+    "--group-add=18", // dialout (Fedora)
+    "--group-add=14", // uucp (Arch)
+    "--group-add=46"  // plugdev (raw USB)
+  ],
   "customizations": {
     "vscode": {
       "extensions": [
