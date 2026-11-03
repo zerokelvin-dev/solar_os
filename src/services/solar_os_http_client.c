@@ -598,7 +598,9 @@ esp_err_t solar_os_http_request_perform(solar_os_http_request_t *request,
     esp_http_client_config_t config = {
         .url = request->options.url,
         .method = solar_os_http_esp_method(request->options.method),
-        .user_agent = request->options.user_agent,
+        .user_agent = request->options.user_agent != NULL
+                          ? request->options.user_agent
+                          : SOLAR_OS_HTTP_USER_AGENT,
         .timeout_ms = (int)initial_timeout,
         .disable_auto_redirect = true,
         .event_handler = solar_os_http_event_bridge,
