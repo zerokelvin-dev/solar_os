@@ -30,7 +30,7 @@ class LauncherAppTest(unittest.TestCase):
     def test_default_config_includes_writer(self):
         self.assertIn(
             '\\"name\\": \\"Writer\\", \\"icon\\": \\"pencil\\", '
-            '\\"command\\": \\"writer\\", \\"column\\": 2, \\"row\\": 1',
+            '\\"command\\": \\"writer\\", \\"column\\": 2, \\"row\\": 2',
             LAUNCHER,
         )
 
@@ -45,8 +45,8 @@ class LauncherAppTest(unittest.TestCase):
         literals = re.findall(r'^\s*(".*")$', LAUNCHER[start:end], re.MULTILINE)
         document = "".join(ast.literal_eval(literal) for literal in literals)
         parsed = json.loads(document)
-        self.assertEqual(parsed["layout"], {"columns": 3, "rows": 2})
-        self.assertEqual(len(parsed["items"]), 6)
+        self.assertEqual(parsed["layout"], {"columns": 3, "rows": 3})
+        self.assertEqual(len(parsed["items"]), 9)
 
     def test_default_config_is_verified_and_atomically_replaced(self):
         self.assertIn("SOLAR_OS_MEMORY_INTERNAL_CRITICAL", LAUNCHER)
