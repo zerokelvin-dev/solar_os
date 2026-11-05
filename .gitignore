@@ -123,3 +123,7 @@ tests/host/reticulum_service_test
 tests/host/lxmf_format_test
 tests/host/lxmf_stamp_test
 tests/host/lxmf_sync_test
+tests/host/*_test
+
+# Downloaded map source data
+.cache/
