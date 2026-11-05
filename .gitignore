@@ -115,3 +115,8 @@ tests/host/sticky_display_test
 /tests/host/sc2_vendor_*.o
 /protocol/sc2/tools/__pycache__/
 /protocol/sc2/build/
+tests/host/reticulum_hdlc_test
+tests/host/reticulum_lora_frame_test
+tests/host/reticulum_job_test
+tests/host/reticulum_service_test
+/tests/host/reticulum_obj/

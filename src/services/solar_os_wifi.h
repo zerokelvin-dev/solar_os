@@ -89,6 +89,8 @@ typedef struct {
 esp_err_t solar_os_wifi_init(void);
 bool solar_os_wifi_enabled_for_current_boot(void);
 bool solar_os_wifi_enabled_for_next_boot(void);
+/* Whether the Wi-Fi driver is started, so the radio is powered. */
+bool solar_os_wifi_radio_started(void);
 esp_err_t solar_os_wifi_set_enabled_for_next_boot(bool enabled);
 esp_err_t solar_os_wifi_start(void);
 esp_err_t solar_os_wifi_stop(void);
