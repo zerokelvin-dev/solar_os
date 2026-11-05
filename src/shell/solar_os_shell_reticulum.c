@@ -1,6 +1,7 @@
 #include "solar_os_shell_commands.h"
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "solar_os_credentials.h"
@@ -33,6 +34,9 @@ static void reticulum_usage(solar_os_shell_io_t *io)
 #if SOLAR_OS_PACKAGE_SERVICE_LXMF
     solar_os_shell_io_writeln(io, "  reticulum lxmf status [instance]");
     solar_os_shell_io_writeln(io, "  reticulum lxmf announce [instance]");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf sync [instance]");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf propagation [node <destination-hex>|auto]");
+    solar_os_shell_io_writeln(io, "  reticulum lxmf propagation interval <minutes>|off");
     solar_os_shell_io_writeln(io, "  reticulum lxmf open <destination-hex>");
     solar_os_shell_io_writeln(io, "  reticulum lxmf identity generate <instance> [--force]");
 #endif
@@ -218,35 +222,129 @@ static void reticulum_lxmf_status(solar_os_shell_io_t *io,
     solar_os_shell_io_printf(io, "  Received: %lu (%lu rejected)\n",
                              (unsigned long)status.received,
                              (unsigned long)status.rejected);
-    solar_os_shell_io_printf(io, "  Sent: %lu (%lu delivered, %lu failed)\n",
+    solar_os_shell_io_printf(io, "  Sent: %lu (%lu delivered, %lu to a propagation node, %lu failed)\n",
                              (unsigned long)status.sent,
                              (unsigned long)status.delivered,
+                             (unsigned long)status.propagated,
                              (unsigned long)status.failed);
+    solar_os_lxmf_settings_t settings;
+    solar_os_lxmf_settings_get(&settings);
+    if (status.propagation_node_hex[0] != '\0') {
+        solar_os_shell_io_printf(io, "  Propagation node: %s (%u hop%s, stamp cost %lu%s)\n",
+                                 status.propagation_node_hex,
+                                 (unsigned)status.propagation_node_hops,
+                                 status.propagation_node_hops == 1U ? "" : "s",
+                                 (unsigned long)status.propagation_stamp_cost,
+                                 settings.propagation_node[0] != '\0' ? ", set" : "");
+    } else if (settings.propagation_node[0] != '\0') {
+        solar_os_shell_io_printf(io, "  Propagation node: %s (set; not heard from yet)\n",
+                                 settings.propagation_node);
+    } else {
+        solar_os_shell_io_writeln(io, "  Propagation node: none heard");
+    }
+    solar_os_shell_io_printf(io, "  Collected: %lu; last sync: %s\n",
+                             (unsigned long)status.collected,
+                             status.sync != NULL ? status.sync : "not yet");
     solar_os_shell_io_printf(io, "  Announces sent: %lu\n",
                              (unsigned long)status.announces_sent);
 }
 
+static void reticulum_lxmf_settings(solar_os_shell_io_t *io,
+                                    const solar_os_lxmf_settings_t *settings)
+{
+    if (settings->propagation_node[0] != '\0') {
+        solar_os_shell_io_printf(io, "Propagation node: %s\n", settings->propagation_node);
+    } else {
+        solar_os_shell_io_writeln(io, "Propagation node: auto (the nearest heard)");
+    }
+    if (settings->sync_interval_min != 0U) {
+        solar_os_shell_io_printf(io, "Collect: every %lu minutes\n",
+                                 (unsigned long)settings->sync_interval_min);
+    } else {
+        solar_os_shell_io_writeln(io, "Collect: only with reticulum lxmf sync");
+    }
+}
+
+static bool reticulum_lxmf_propagation(solar_os_shell_io_t *io, int argc, char **argv)
+{
+    solar_os_lxmf_settings_t settings;
+    solar_os_lxmf_settings_get(&settings);
+    if (argc == 3) {
+        reticulum_lxmf_settings(io, &settings);
+        return true;
+    }
+    if (argc != 5) {
+        return false;
+    }
+    if (strcmp(argv[3], "node") == 0) {
+        if (strcmp(argv[4], "auto") == 0) {
+            settings.propagation_node[0] = '\0';
+        } else if (!solar_os_lxmf_normalize_hash(argv[4], settings.propagation_node,
+                                                 sizeof(settings.propagation_node))) {
+            solar_os_shell_diag_invalid(io, "reticulum lxmf propagation node", "node",
+                                        argv[4], "32 hexadecimal characters, or auto",
+                                        "reticulum lxmf propagation node <destination-hex>|auto",
+                                        false);
+            return true;
+        }
+    } else if (strcmp(argv[3], "interval") == 0) {
+        unsigned long minutes = 0UL;
+        if (strcmp(argv[4], "off") != 0) {
+            char *end = NULL;
+            minutes = strtoul(argv[4], &end, 10);
+            if (end == argv[4] || *end != '\0' || minutes == 0UL ||
+                minutes > SOLAR_OS_LXMF_SYNC_INTERVAL_MAX) {
+                solar_os_shell_diag_invalid(io, "reticulum lxmf propagation interval", "minutes",
+                                            argv[4], "1 to 10080, or off",
+                                            "reticulum lxmf propagation interval <minutes>|off",
+                                            false);
+                return true;
+            }
+        }
+        settings.sync_interval_min = (uint32_t)minutes;
+    } else {
+        return false;
+    }
+    const esp_err_t error = solar_os_lxmf_settings_set(&settings);
+    if (error != ESP_OK) {
+        reticulum_error(io, "lxmf propagation", error);
+        return true;
+    }
+    reticulum_lxmf_settings(io, &settings);
+    return true;
+}
+
 static bool reticulum_lxmf(solar_os_shell_io_t *io, int argc, char **argv)
 {
+    if (argc >= 3 && strcmp(argv[2], "propagation") == 0) {
+        return reticulum_lxmf_propagation(io, argc, argv);
+    }
     if ((argc == 3 || argc == 4) &&
-        (strcmp(argv[2], "status") == 0 || strcmp(argv[2], "announce") == 0)) {
+        (strcmp(argv[2], "status") == 0 || strcmp(argv[2], "announce") == 0 ||
+         strcmp(argv[2], "sync") == 0)) {
         const char *only = argc == 4 ? argv[3] : NULL;
         const bool announce = strcmp(argv[2], "announce") == 0;
+        const bool sync = strcmp(argv[2], "sync") == 0;
         solar_os_messaging_provider_id_t cursor = 0;
         solar_os_messaging_provider_status_t instance;
         bool any = false;
         while (reticulum_lxmf_next(only, &cursor, &instance)) {
             any = true;
-            if (!announce) {
+            if (!announce && !sync) {
                 reticulum_lxmf_status(io, &instance);
                 continue;
             }
-            const esp_err_t error = solar_os_lxmf_announce(instance.id);
+            const esp_err_t error = sync ? solar_os_lxmf_sync(instance.id) :
+                                           solar_os_lxmf_announce(instance.id);
             if (error == ESP_ERR_INVALID_STATE) {
                 solar_os_shell_io_printf(io, "%s: offline; start it with: job start reticulum <host> [port],"
                                          " and messages connect %s\n", instance.name, instance.name);
             } else if (error != ESP_OK) {
                 solar_os_shell_io_printf(io, "%s: %s\n", instance.name, solar_os_shell_error_text(error));
+            } else if (sync) {
+                solar_os_shell_io_printf(io, "%s: collecting from the propagation node; "
+                                         "see: reticulum lxmf status %s\n",
+                                         instance.name, instance.name);
             } else {
                 solar_os_shell_io_printf(io, "%s: LXMF announce sent\n", instance.name);
             }

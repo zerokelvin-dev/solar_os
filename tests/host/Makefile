@@ -38,7 +38,7 @@ TARGETS += gesture_command_test
 can_twai_test: can_twai_test.c $(ROOT)/src/drivers/can_twai.c $(ROOT)/src/services/solar_os_can.c $(wildcard can_stubs/driver/*.h)
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -Ican_stubs -Iepd_stubs -Iexpansion_stubs -I. -I$(ROOT)/src/drivers -I$(ROOT)/src/services $(filter %.c,$^) -o $@
 
-TARGETS += reticulum_hdlc_test lxmf_format_test reticulum_lora_frame_test
+TARGETS += reticulum_hdlc_test lxmf_format_test lxmf_stamp_test reticulum_lora_frame_test
 TARGETS += ble_service_test ble_multi_peer_test ble_nimble_test ble_hid_test ble_lua_bindings_test ble_server_test ble_coc_test
 TARGETS += input_action_match_test gesture_completion_test touch_gesture_test
 TARGETS += epd_ssd1685_test ssd1685_expansion_test
@@ -1265,6 +1265,13 @@ lxmf_format_test: lxmf_format_test.c \
 		lxmf_format_test.c \
 		$(ROOT)/src/services/solar_os_lxmf_format.c -o $@
 
+lxmf_stamp_test: lxmf_stamp_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.h
+	$(CC) $(CFLAGS) -Imodel_bundle_stubs -I. -I$(ROOT)/src/services \
+		lxmf_stamp_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.c -lcrypto -o $@
+
 reticulum_hdlc_test: reticulum_hdlc_test.c \
 		$(ROOT)/src/services/solar_os_reticulum_hdlc.c \
 		$(ROOT)/src/services/solar_os_reticulum_hdlc.h
@@ -1453,6 +1460,7 @@ test: $(TARGETS)
 	./meshcore_stream_codec_test
 	./meshcore_ble_protocol_test
 	./lxmf_format_test
+	./lxmf_stamp_test
 	./reticulum_hdlc_test
 	./reticulum_lora_frame_test
 	./link_repeater_test
@@ -1511,7 +1519,7 @@ test: $(TARGETS)
 
 clean:
 	$(RM) $(TARGETS) model_bundle_test inference_lua_json_test zoo_test
-	$(RM) -r reticulum_obj reticulum_service_test
+	$(RM) -r reticulum_obj reticulum_service_test lxmf_sync_test
 	$(RM) -r generated
 
 # ---------------------------------------------------------------------------
@@ -1805,9 +1813,24 @@ reticulum_service_test: reticulum_service_test.cpp $(RETICULUM_SERVICE_SRCS) \
 		reticulum_service_test.cpp $(RETICULUM_SERVICE_SRCS) \
 		$(RETICULUM_TEST_C_OBJS) $(RNS_LIB_OBJS) -lpthread -o $@
 
+# The LXMF service is included whole, so a test reaches its internals.
+LXMF_SYNC_C_SRCS := $(ROOT)/src/services/solar_os_lxmf_format.c
+LXMF_SYNC_C_OBJS := $(addprefix $(RNS_OBJ)/test/,$(notdir $(LXMF_SYNC_C_SRCS:.c=.o)))
+$(foreach s,$(LXMF_SYNC_C_SRCS),$(eval $(call RETICULUM_TEST_C_RULE,$(s))))
+
+lxmf_sync_test: lxmf_sync_test.cpp $(ROOT)/src/services/solar_os_lxmf.cpp \
+		$(LXMF_SYNC_C_OBJS) $(RNS_OBJ)/test/host_platform.o $(RNS_LIB_OBJS) \
+		$(wildcard $(ROOT)/src/services/solar_os_lxmf*.h)
+	@test -n "$(RETICULUM_MBEDTLS_DIR)" || { echo "set RETICULUM_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(RETICULUM_CXX) $(filter-out -std=%,$(CFLAGS)) -std=gnu++17 -Wno-deprecated-declarations \
+		-Wno-missing-field-initializers -Wno-extra $(RNS_DEFS) $(RNS_INC) \
+		lxmf_sync_test.cpp $(LXMF_SYNC_C_OBJS) $(RNS_OBJ)/test/host_platform.o \
+		$(RNS_LIB_OBJS) -lpthread -o $@
+
 .PHONY: reticulum-test
-reticulum-test: reticulum_job_test $(if $(RETICULUM_MBEDTLS_DIR),reticulum_service_test)
+reticulum-test: reticulum_job_test $(if $(RETICULUM_MBEDTLS_DIR),reticulum_service_test lxmf_sync_test)
 	./reticulum_job_test
 	$(if $(RETICULUM_MBEDTLS_DIR),./reticulum_service_test)
+	$(if $(RETICULUM_MBEDTLS_DIR),./lxmf_sync_test)
 
 test: reticulum-test
