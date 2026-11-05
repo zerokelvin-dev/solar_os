@@ -31,6 +31,10 @@ typedef struct {
 void solar_os_crypto_sha256_init(solar_os_crypto_sha256_t *ctx);
 void solar_os_crypto_sha256_free(solar_os_crypto_sha256_t *ctx);
 esp_err_t solar_os_crypto_sha256_start(solar_os_crypto_sha256_t *ctx);
+/* Copies a hash in progress into an initialized dst, so a shared prefix is
+ * hashed only once. */
+esp_err_t solar_os_crypto_sha256_clone(solar_os_crypto_sha256_t *dst,
+                                       const solar_os_crypto_sha256_t *src);
 esp_err_t solar_os_crypto_sha256_update(solar_os_crypto_sha256_t *ctx,
                                         const void *data,
                                         size_t len);

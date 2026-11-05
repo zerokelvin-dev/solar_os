@@ -38,6 +38,7 @@ TARGETS += gesture_command_test
 can_twai_test: can_twai_test.c $(ROOT)/src/drivers/can_twai.c $(ROOT)/src/services/solar_os_can.c $(wildcard can_stubs/driver/*.h)
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -Ican_stubs -Iepd_stubs -Iexpansion_stubs -I. -I$(ROOT)/src/drivers -I$(ROOT)/src/services $(filter %.c,$^) -o $@
 
+TARGETS += reticulum_hdlc_test lxmf_format_test lxmf_stamp_test reticulum_lora_frame_test
 TARGETS += ble_service_test ble_multi_peer_test ble_nimble_test ble_hid_test ble_lua_bindings_test ble_server_test ble_coc_test
 TARGETS += input_action_match_test gesture_completion_test touch_gesture_test
 TARGETS += epd_ssd1685_test ssd1685_expansion_test
@@ -1261,6 +1262,34 @@ meshcore_ble_protocol_test: meshcore_ble_protocol_test.c \
 		meshcore_ble_protocol_test.c \
 		$(ROOT)/src/services/solar_os_meshcore_ble_protocol.c -o $@
 
+lxmf_format_test: lxmf_format_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_format.c \
+		$(ROOT)/src/services/solar_os_lxmf_format.h
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/src/services \
+		lxmf_format_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_format.c -o $@
+
+lxmf_stamp_test: lxmf_stamp_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.h
+	$(CC) $(CFLAGS) -Imodel_bundle_stubs -I. -I$(ROOT)/src/services \
+		lxmf_stamp_test.c \
+		$(ROOT)/src/services/solar_os_lxmf_stamp.c -lcrypto -o $@
+
+reticulum_hdlc_test: reticulum_hdlc_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_hdlc.c \
+		$(ROOT)/src/services/solar_os_reticulum_hdlc.h
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/src/services \
+		reticulum_hdlc_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_hdlc.c -o $@
+
+reticulum_lora_frame_test: reticulum_lora_frame_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_lora_frame.c \
+		$(ROOT)/src/services/solar_os_reticulum_lora_frame.h
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/src/services \
+		reticulum_lora_frame_test.c \
+		$(ROOT)/src/services/solar_os_reticulum_lora_frame.c -o $@
+
 link_repeater_test: link_repeater_test.c \
 		$(ROOT)/src/services/solar_os_link_repeater.c \
 		$(ROOT)/src/services/solar_os_link_repeater.h \
@@ -1434,6 +1463,10 @@ test: $(TARGETS)
 	./meshcore_channel_key_test
 	./meshcore_stream_codec_test
 	./meshcore_ble_protocol_test
+	./lxmf_format_test
+	./lxmf_stamp_test
+	./reticulum_hdlc_test
+	./reticulum_lora_frame_test
 	./link_repeater_test
 	./time_timezone_test
 	./rtc_service_test
@@ -1491,6 +1524,7 @@ test: $(TARGETS)
 
 clean:
 	$(RM) $(TARGETS) model_bundle_test inference_lua_json_test zoo_test
+	$(RM) -r reticulum_obj reticulum_service_test lxmf_sync_test
 	$(RM) -r generated
 
 # ---------------------------------------------------------------------------
@@ -1709,3 +1743,101 @@ all: sc2_relay_policy_test
 sc2-test: sc2-relay-policy-test
 test: sc2-relay-policy-test
 TARGETS += sc2_relay_policy_test
+
+# Reticulum: the job against a scripted service, and the service and job on
+# the real microReticulum, whose crypto overlay needs mbedTLS (the ESP-IDF
+# copy that PlatformIO installs; set RETICULUM_MBEDTLS_DIR= to skip).
+RETICULUM_STUBS := reticulum_stubs
+# Threads and a C++ library: always under the sanitizers (RETICULUM_SANITIZE=
+# to build without).
+RETICULUM_SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
+# c++, not make's g++: the dev container's c++ sends sanitized builds to clang.
+RETICULUM_CXX ?= c++
+RETICULUM_INC := $(RETICULUM_SANITIZE) -D_GNU_SOURCE -include $(RETICULUM_STUBS)/host_compat.h -idirafter $(ROOT)/include \
+	-I$(RETICULUM_STUBS) -I. -I$(ROOT)/src -I$(ROOT)/src/jobs -I$(ROOT)/src/services
+RETICULUM_FREERTOS := $(RETICULUM_STUBS)/host_platform.c $(RETICULUM_STUBS)/host_platform.h \
+	$(wildcard $(RETICULUM_STUBS)/freertos/*.h)
+
+reticulum_job_test: reticulum_job_test.c $(ROOT)/src/jobs/solar_os_reticulum_job.c $(RETICULUM_FREERTOS)
+	$(CC) $(CFLAGS) $(RETICULUM_INC) reticulum_job_test.c \
+		$(RETICULUM_STUBS)/host_platform.c -lpthread -o $@
+
+TARGETS += reticulum_job_test
+
+RETICULUM_MBEDTLS_DIR ?= $(firstword $(wildcard $(HOME)/.platformio/packages/framework-espidf/components/mbedtls/mbedtls))
+RNS_DIR := $(ROOT)/src/vendor/microreticulum
+RNS_OBJ := reticulum_obj
+# RNS_RESOURCE_MAX_TRANSFER_SIZE matches src/CMakeLists.txt.
+RNS_DEFS := -DUSTORE_USE_UNIVERSALFS=1 -DRNS_USE_FS=1 -DRNS_LOG_LEVEL=4 \
+	-DRNS_RESOURCE_MAX_TRANSFER_SIZE=131072 \
+	'-DMBEDTLS_CONFIG_FILE="rns_mbedtls_config.h"'
+# microReticulum's own idiom, RNS::Link({RNS::Type::NONE}), draws clang's
+# braced-scalar warning in the code that uses it.
+RNS_INC := $(RETICULUM_INC) -Wno-braced-scalar-init -isystem $(RNS_DIR) -isystem $(RETICULUM_MBEDTLS_DIR)/include \
+	-I$(ROOT)/components/wireguard_lwip/src
+RNS_CXXFLAGS := $(filter-out -std=% -Werror,$(CFLAGS)) -std=gnu++17 -w
+RNS_LIB_SRCS := $(shell find $(RNS_DIR) -name '*.cpp' 2>/dev/null)
+RNS_C_SRCS := $(shell find $(RNS_DIR) -name '*.c' 2>/dev/null) \
+	$(addprefix $(ROOT)/src/vendor/meshcore/ed25519/,add_scalar.c fe.c ge.c key_exchange.c keypair.c sc.c sha512.c sign.c verify.c) \
+	$(ROOT)/components/wireguard_lwip/src/crypto/refc/x25519.c
+RNS_MBEDTLS_SRCS := $(addprefix $(RETICULUM_MBEDTLS_DIR)/library/,md.c sha256.c sha512.c aes.c platform_util.c constant_time.c)
+RNS_LIB_OBJS := $(patsubst $(ROOT)/%.cpp,$(RNS_OBJ)/%.o,$(RNS_LIB_SRCS)) \
+	$(patsubst $(ROOT)/%.c,$(RNS_OBJ)/%.o,$(RNS_C_SRCS)) \
+	$(addprefix $(RNS_OBJ)/mbedtls/,$(notdir $(RNS_MBEDTLS_SRCS:.c=.o)))
+RETICULUM_SERVICE_SRCS := $(addprefix $(ROOT)/src/services/,solar_os_reticulum.cpp \
+	solar_os_reticulum_lora.cpp solar_os_reticulum_tcp.cpp)
+RETICULUM_SERVICE_C_SRCS := $(addprefix $(ROOT)/src/services/,solar_os_reticulum_lora_frame.c \
+	solar_os_reticulum_hdlc.c) $(ROOT)/src/jobs/solar_os_reticulum_job.c
+
+$(RNS_OBJ)/%.o: $(ROOT)/%.cpp $(RETICULUM_STUBS)/rns_mbedtls_config.h
+	@mkdir -p $(dir $@)
+	$(RETICULUM_CXX) $(RNS_CXXFLAGS) $(RNS_DEFS) $(RNS_INC) -c $< -o $@
+
+# orlp's Ed25519 shifts negative limbs on purpose, as MeshCore's copy does.
+$(RNS_OBJ)/%.o: $(ROOT)/%.c $(RETICULUM_STUBS)/rns_mbedtls_config.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -Werror,$(CFLAGS)) -w $(RNS_DEFS) $(RNS_INC) -fno-sanitize=shift -c $< -o $@
+
+$(RNS_OBJ)/mbedtls/%.o: $(RETICULUM_MBEDTLS_DIR)/library/%.c $(RETICULUM_STUBS)/rns_mbedtls_config.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -Werror,$(CFLAGS)) -w $(RNS_DEFS) $(RNS_INC) -c $< -o $@
+
+# The SolarOS sources under test keep -Werror; the library does not.
+RETICULUM_TEST_C_SRCS := $(RETICULUM_SERVICE_C_SRCS) $(RETICULUM_STUBS)/host_platform.c
+RETICULUM_TEST_C_OBJS := $(addprefix $(RNS_OBJ)/test/,$(notdir $(RETICULUM_TEST_C_SRCS:.c=.o)))
+define RETICULUM_TEST_C_RULE
+$(RNS_OBJ)/test/$(notdir $(1:.c=.o)): $(1) $(RETICULUM_FREERTOS) $(wildcard $(ROOT)/src/services/solar_os_reticulum*.h)
+	@mkdir -p $(RNS_OBJ)/test
+	$$(CC) $$(CFLAGS) $$(RETICULUM_INC) -c $(1) -o $$@
+endef
+$(foreach s,$(RETICULUM_TEST_C_SRCS),$(eval $(call RETICULUM_TEST_C_RULE,$(s))))
+
+reticulum_service_test: reticulum_service_test.cpp $(RETICULUM_SERVICE_SRCS) \
+		$(RETICULUM_TEST_C_OBJS) $(RNS_LIB_OBJS) \
+		$(wildcard $(ROOT)/src/services/solar_os_reticulum*.h)
+	@test -n "$(RETICULUM_MBEDTLS_DIR)" || { echo "set RETICULUM_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(RETICULUM_CXX) $(filter-out -std=%,$(CFLAGS)) -std=gnu++17 $(RNS_DEFS) $(RNS_INC) \
+		reticulum_service_test.cpp $(RETICULUM_SERVICE_SRCS) \
+		$(RETICULUM_TEST_C_OBJS) $(RNS_LIB_OBJS) -lpthread -o $@
+
+# The LXMF service is included whole, so a test reaches its internals.
+LXMF_SYNC_C_SRCS := $(ROOT)/src/services/solar_os_lxmf_format.c
+LXMF_SYNC_C_OBJS := $(addprefix $(RNS_OBJ)/test/,$(notdir $(LXMF_SYNC_C_SRCS:.c=.o)))
+$(foreach s,$(LXMF_SYNC_C_SRCS),$(eval $(call RETICULUM_TEST_C_RULE,$(s))))
+
+lxmf_sync_test: lxmf_sync_test.cpp $(ROOT)/src/services/solar_os_lxmf.cpp \
+		$(LXMF_SYNC_C_OBJS) $(RNS_OBJ)/test/host_platform.o $(RNS_LIB_OBJS) \
+		$(wildcard $(ROOT)/src/services/solar_os_lxmf*.h)
+	@test -n "$(RETICULUM_MBEDTLS_DIR)" || { echo "set RETICULUM_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(RETICULUM_CXX) $(filter-out -std=%,$(CFLAGS)) -std=gnu++17 -Wno-deprecated-declarations \
+		-Wno-missing-field-initializers -Wno-extra $(RNS_DEFS) $(RNS_INC) \
+		lxmf_sync_test.cpp $(LXMF_SYNC_C_OBJS) $(RNS_OBJ)/test/host_platform.o \
+		$(RNS_LIB_OBJS) -lpthread -o $@
+
+.PHONY: reticulum-test
+reticulum-test: reticulum_job_test $(if $(RETICULUM_MBEDTLS_DIR),reticulum_service_test lxmf_sync_test)
+	./reticulum_job_test
+	$(if $(RETICULUM_MBEDTLS_DIR),./reticulum_service_test)
+	$(if $(RETICULUM_MBEDTLS_DIR),./lxmf_sync_test)
+
+test: reticulum-test
