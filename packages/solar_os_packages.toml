@@ -397,6 +397,16 @@ label = "Inbox"
 category = "Messaging"
 members = ["app_inbox"]
 
+[groups.places]
+label = "Places"
+category = "Messaging"
+members = ["service_places"]
+
+[groups.map]
+label = "Map"
+category = "Messaging"
+members = ["app_map"]
+
 [groups.contacts]
 label = "Contacts"
 category = "Messaging"
@@ -1099,6 +1109,39 @@ sources = [
   "services/solar_os_lxmf_settings.c",
   "services/solar_os_lxmf_stamp.c",
 ]
+
+[packages.service_geo]
+label = "service.geo"
+sources = ["services/solar_os_map_geo.c"]
+
+[packages.service_places]
+label = "service.places"
+depends = ["service_geo", "service_gnss"]
+sources = [
+  "services/solar_os_places.c",
+  "services/solar_os_places_gnss.c",
+  "shell/solar_os_shell_places.c",
+]
+requires = ["esp_timer", "heap"]
+
+[packages.service_inflate]
+label = "service.inflate"
+sources = ["services/solar_os_inflate.c"]
+
+[packages.service_map]
+label = "service.map"
+depends = ["service_geo", "service_http_client", "service_inflate"]
+sources = [
+  "services/solar_os_map_geojson.c",
+  "services/solar_os_map_geometry.c",
+  "services/solar_os_map_layers.c",
+  "services/solar_os_map_project.c",
+  "services/solar_os_map_osm.c",
+  "services/solar_os_map_fetch.c",
+  "services/solar_os_map_http.c",
+  "services/solar_os_map_base.c",
+]
+requires = ["esp_timer", "heap"]
 
 [packages.service_contacts]
 label = "service.contacts"
@@ -3017,6 +3060,14 @@ depends = ["service_inbox"]
 sources = [
   "apps/solar_os_inbox_app.c",
   "shell/solar_os_shell_inbox.c",
+]
+
+[packages.app_map]
+label = "app.map"
+depends = ["service_map", "service_places"]
+sources = [
+  "apps/solar_os_map_app.c",
+  "shell/solar_os_shell_map.c",
 ]
 
 [packages.app_contacts]
