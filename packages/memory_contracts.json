@@ -326,6 +326,12 @@
         "new": 2
       },
       "reason": "Interface objects handed to microReticulum, which owns them through std::shared_ptr and frees them with delete; start catches bad_alloc and tears down."
+    },
+    "src/services/solar_os_lxmf.cpp": {
+      "calls": {
+        "new": 1
+      },
+      "reason": "Placement new into tagged owned memory; creates no additional allocation."
     }
   }
 }

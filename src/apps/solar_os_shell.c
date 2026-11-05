@@ -1064,7 +1064,15 @@ static const char * const meshcore_stream_port_values[] = {"mser0", "mser1"};
 #if SOLAR_OS_PACKAGE_JOB_RETICULUM
 static const char * const reticulum_subcommands[] = {
     "status", "identity", "announce", "announces",
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    "lxmf",
+#endif
 };
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+static const char * const reticulum_lxmf_subcommands[] = {
+    "status", "announce", "open", "identity",
+};
+#endif
 static const char * const reticulum_identity_subcommands[] = {
     "show", "generate", "import", "export",
 };
@@ -2335,6 +2343,9 @@ static const char * const path_meshcore_stream_remove[] = {
 #endif
 #if SOLAR_OS_PACKAGE_JOB_RETICULUM
 static const char * const path_reticulum[] = {"reticulum"};
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+static const char * const path_reticulum_lxmf[] = {"reticulum", "lxmf"};
+#endif
 static const char * const path_reticulum_identity[] = {
     "reticulum", "identity"
 };
@@ -3706,6 +3717,9 @@ static const shell_completion_rule_t shell_completion_rules[] = {
     SHELL_COMPLETION_STATIC(path_reticulum, reticulum_subcommands),
     SHELL_COMPLETION_STATIC(path_reticulum_identity,
                             reticulum_identity_subcommands),
+#if SOLAR_OS_PACKAGE_SERVICE_LXMF
+    SHELL_COMPLETION_STATIC(path_reticulum_lxmf, reticulum_lxmf_subcommands),
+#endif
 #endif
     SHELL_COMPLETION_PORTS(path_job_start_slip),
 #if SOLAR_OS_PACKAGE_JOB_SLIP
