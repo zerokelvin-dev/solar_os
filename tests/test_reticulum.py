@@ -1,4 +1,4 @@
-"""Reticulum host tests: the protocol codecs, the job, and the
+"""Reticulum and LXMF host tests: the protocol codecs, the job, and the
 service on the real microReticulum (see the Reticulum section of
 tests/host/Makefile)."""
 import os
@@ -31,6 +31,8 @@ class ReticulumProtocolTest(unittest.TestCase):
     def test_lora_frame(self):
         build_and_run(self, "reticulum_lora_frame_test")
 
+    def test_lxmf_format(self):
+        build_and_run(self, "lxmf_format_test")
 
 
 
