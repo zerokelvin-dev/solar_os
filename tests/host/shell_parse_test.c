@@ -92,6 +92,12 @@ int main(void)
     char secret_ble[] = "job start meshcore-ble 01:02:03:04:05:06 public 123456";
     result = parse(secret_ble, argv, 8);
     assert(solar_os_shell_command_has_secrets(result.argc, (const char *const *)argv));
+    char reticulum_key[] = "reticulum identity import 00112233";
+    result = parse(reticulum_key, argv, 8);
+    assert(solar_os_shell_command_has_secrets(result.argc, (const char *const *)argv));
+    char reticulum_show[] = "reticulum identity show";
+    result = parse(reticulum_show, argv, 8);
+    assert(!solar_os_shell_command_has_secrets(result.argc, (const char *const *)argv));
     char ordinary[] = "messages instances";
     result = parse(ordinary, argv, 8);
     assert(!solar_os_shell_command_has_secrets(result.argc, (const char *const *)argv));

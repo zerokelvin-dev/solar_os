@@ -247,3 +247,17 @@ esp_err_t adc_port_read(gpio_num_t pin, adc_port_sample_t *sample)
     };
     return ESP_OK;
 }
+
+esp_err_t adc_port_lock(void)
+{
+    ESP_RETURN_ON_ERROR(adc_port_ensure_init(), TAG, "ADC mutex unavailable");
+    xSemaphoreTake(adc_mutex, portMAX_DELAY);
+    return ESP_OK;
+}
+
+void adc_port_unlock(void)
+{
+    if (adc_mutex != NULL) {
+        xSemaphoreGive(adc_mutex);
+    }
+}
