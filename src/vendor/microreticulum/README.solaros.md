@@ -64,8 +64,8 @@ copied. Nothing else in this directory differs from the pinned revisions.
 | `microReticulum/Cryptography/AES.h` | AES-CBC on mbedtls |
 | `microReticulum/Cryptography/Ed25519.h` | Ed25519 on the orlp code SolarOS already carries for MeshCore (`src/vendor/meshcore/ed25519`), with input sizes checked |
 | `microReticulum/Cryptography/X25519.h` | X25519 on the reference code in `components/wireguard_lwip`, with input sizes checked |
-| `microReticulum/Cryptography/Random.h` | Every random byte from the ESP32 hardware RNG (`esp_fill_random()`); upstream's `randomnum` has 8 bits of entropy per call |
-| `RNG.h` | Nothing to seed or service, in place of rweather's software RNG |
+| `microReticulum/Cryptography/Random.h` | Every random byte from SolarOS's CTR-DRBG (`src/services/solar_os_reticulum_random.c`); upstream's `randomnum` has 8 bits of entropy per call |
+| `RNG.h` | Seeds that generator when the Reticulum instance is made, in place of rweather's software RNG |
 | `microReticulum/Utilities/Memory.{h,cpp}` | No TLSF pools: containers use `operator new`, heap statistics come from `heap_caps_*` |
 | `microReticulum.h` | The umbrella header without Provisioning, which is not vendored |
 
@@ -77,8 +77,9 @@ copied. Nothing else in this directory differs from the pinned revisions.
 - The X25519 overlay uses `crypto/refc/x25519.h` from SolarOS's
   `components/wireguard_lwip`, so the compiling component must require it.
 - `esp_fill_random()` is a true random source only while Wi-Fi or Bluetooth is
-  on, or inside `bootloader_random_enable()`. Identity and link keys must be
-  made under one of those.
+  on, or inside `bootloader_random_enable()`. SolarOS's generator is a CTR-DRBG
+  seeded under one of those (the SAR ADC entropy source, with ADC reads held
+  off, when the radio is off), so keys are not pseudo-random in LoRa-only use.
 - Set `RNS_RESOURCE_MAX_TRANSFER_SIZE` to the largest resource segment the
   integration takes. The default, one 16 MiB segment, is more than a small
   device can hold.

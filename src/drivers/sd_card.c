@@ -40,7 +40,12 @@
 
 #define SD_CARD_MAX_MOUNTS FF_VOLUMES
 #define SD_CARD_SECTOR_BYTES 512U
+#if SOLAR_OS_PACKAGE_SERVICE_RETICULUM
+/* Each microStore store under /sdcard/reticulum keeps two files open. */
+#define SD_CARD_DEFAULT_MAX_FILES 12
+#else
 #define SD_CARD_DEFAULT_MAX_FILES 5
+#endif
 #define SD_CARD_EXTRA_MAX_FILES 3
 #define SD_CARD_ALLOC_UNIT_SIZE (16 * 1024)
 

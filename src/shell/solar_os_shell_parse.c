@@ -17,6 +17,8 @@ bool solar_os_shell_command_has_secrets(int argc, const char *const *argv)
     if (argc >= 3 && !strcmp(argv[0], "meshcore")) return
         (!strcmp(argv[1], "identity") && !strcmp(argv[2], "import")) ||
         (!strcmp(argv[1], "channel") && !strcmp(argv[2], "add"));
+    if (argc >= 3 && !strcmp(argv[0], "reticulum")) return
+        !strcmp(argv[1], "identity") && !strcmp(argv[2], "import");
     return false;
 }
 
