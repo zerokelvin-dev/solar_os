@@ -1,0 +1,49 @@
+{
+  "name": "SolarOS",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "vscode",
+  "mounts": [
+    // PlatformIO packages (platform, toolchains, ESP-IDF; a few GB) persist across rebuilds.
+    "source=solaros-platformio,target=/home/vscode/.platformio,type=volume",
+    "source=solaros-ccache,target=/home/vscode/.cache,type=volume",
+    // Claude Code login, settings and history.
+    "source=solaros-claude,target=/home/vscode/.claude,type=volume"
+  ],
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "containerEnv": {
+    "PYTHONPATH": "${containerWorkspaceFolder}:${containerWorkspaceFolder}/tests:${containerWorkspaceFolder}/scripts",
+    "PLATFORMIO_SETTING_ENABLE_TELEMETRY": "No"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:${containerWorkspaceFolder}/.devcontainer/bin"
+  },
+  // USB boards pass through automatically, including ones plugged in later.
+  // Linux hosts only: Docker Desktop (macOS/Windows) has no USB passthrough.
+  "runArgs": [
+    // Host /dev, so devices and /dev/serial/by-id names appear live.
+    "--volume=/dev:/dev",
+    // Which device types the container may open:
+    "--device-cgroup-rule=c 188:* rmw", // ttyUSB: CH340/CP210x/FTDI bridges
+    "--device-cgroup-rule=c 166:* rmw", // ttyACM: ESP32-S3 native USB, CDC
+    "--device-cgroup-rule=c 189:* rmw", // raw USB, for JTAG/OpenOCD
+    // Serial port groups, by host distro:
+    "--group-add=20", // dialout (Debian, Ubuntu)
+    "--group-add=18", // dialout (Fedora)
+    "--group-add=14", // uucp (Arch)
+    "--group-add=46"  // plugdev (raw USB)
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "platformio.platformio-ide",
+        "ms-vscode.cpptools",
+        "ms-python.python",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "platformio-ide.useBuiltinPython": false,
+        "platformio-ide.useBuiltinPIOCore": false
+      }
+    }
+  }
+}

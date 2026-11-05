@@ -1,0 +1,33 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "env",
+      "type": "promptString",
+      "description": "PlatformIO env (see platformio.ini)",
+      "default": "solar_term"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "SolarOS: build",
+      "type": "shell",
+      "command": "pio run -e ${input:env}",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "SolarOS: host tests",
+      "type": "shell",
+      "command": "solar-test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "SolarOS: QEMU",
+      "type": "shell",
+      "command": "solar-qemu ${input:env}",
+      "problemMatcher": []
+    }
+  ]
+}

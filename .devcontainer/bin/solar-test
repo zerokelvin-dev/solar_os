@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Host unit tests: tests/test_*.py, one process per module, in parallel.
+#   solar-test                 all modules
+#   solar-test backlight ble_  modules whose name starts with these
+#   JOBS=1 solar-test          serial
+set -uo pipefail
+cd "$(dirname "$0")/../.."
+export PYTHONPATH="$PWD:$PWD/tests:$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}"
+
+mods=()
+if (($#)); then
+  for p in "$@"; do for f in tests/test_"$p"*.py; do [[ -e $f ]] && mods+=("$f"); done; done
+else
+  mods=(tests/test_*.py)
+fi
+((${#mods[@]})) || { echo "no test modules match: $*" >&2; exit 2; }
+
+logs=.pio/solar-test   # kept for inspection; .pio/ is git-ignored
+rm -rf "$logs"; mkdir -p "$logs"
+printf '%s\n' "${mods[@]}" | xargs -P "${JOBS:-$(nproc)}" -I{} sh -c '
+  m=$(basename {} .py)
+  if python3 -m unittest "$m" >"$1/$m.log" 2>&1; then echo "ok    $m"; else echo "FAIL  $m"; fi
+' _ "$logs" | sort -k2
+
+failed=$(grep -l -E '^(FAILED|ERROR:|FAIL:)' "$logs"/*.log 2>/dev/null || true)
+echo
+echo "${#mods[@]} modules, $(echo -n "$failed" | grep -c . || true) failed. Logs: $logs"
+for f in $failed; do echo "--- $(basename "$f" .log)"; grep -E -A15 '^(ERROR|FAIL):' "$f" | head -40; done
+[[ -z $failed ]]
