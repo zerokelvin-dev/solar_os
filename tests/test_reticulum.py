@@ -34,6 +34,8 @@ class ReticulumProtocolTest(unittest.TestCase):
     def test_lxmf_format(self):
         build_and_run(self, "lxmf_format_test")
 
+    def test_lxmf_stamp(self):
+        build_and_run(self, "lxmf_stamp_test")
 
 
 class ReticulumJobTest(unittest.TestCase):
@@ -54,6 +56,8 @@ class ReticulumServiceTest(unittest.TestCase):
     def test_service_and_job_on_microreticulum(self):
         build_and_run(self, "reticulum_service_test")
 
+    def test_propagation_sync_with_store_failures(self):
+        build_and_run(self, "lxmf_sync_test")
 
 
 if __name__ == "__main__":
