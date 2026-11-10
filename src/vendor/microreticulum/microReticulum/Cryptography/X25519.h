@@ -6,7 +6,7 @@ extern "C" {
 #include <crypto/refc/x25519.h>
 }
 
-#include <esp_random.h>
+#include "Random.h"
 
 #include <memory>
 #include <stdexcept>
@@ -54,7 +54,7 @@ namespace RNS { namespace Cryptography {
 				_privateKey = privateKey;
 			}
 			else {
-				esp_fill_random(_privateKey.writable(32), 32);
+				_privateKey = random(32);
 			}
 			if (x25519_base(_publicKey.writable(32), _privateKey.data(), 1) != 0) {
 				throw std::runtime_error("X25519 public key derivation failed");

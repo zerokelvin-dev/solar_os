@@ -320,6 +320,12 @@
         "malloc": 1
       },
       "reason": "Module port macro/shim delegates to the host memory service; guest pointers stay fixed."
+    },
+    "src/services/solar_os_reticulum.cpp": {
+      "calls": {
+        "new": 2
+      },
+      "reason": "Interface objects handed to microReticulum, which owns them through std::shared_ptr and frees them with delete; start catches bad_alloc and tears down."
     }
   }
 }

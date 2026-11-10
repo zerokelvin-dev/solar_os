@@ -119,3 +119,8 @@ tests/host/sticky_display_test
 /protocol/sc2/build/
 
 /tests/host/stream_test
+tests/host/reticulum_hdlc_test
+tests/host/reticulum_lora_frame_test
+tests/host/reticulum_job_test
+tests/host/reticulum_service_test
+/tests/host/reticulum_obj/

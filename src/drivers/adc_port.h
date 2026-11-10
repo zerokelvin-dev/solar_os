@@ -20,3 +20,8 @@ esp_err_t adc_port_init(void);
 bool adc_port_is_adc_capable(gpio_num_t pin, adc_unit_t *unit, adc_channel_t *channel);
 esp_err_t adc_port_configure_pin(gpio_num_t pin, adc_atten_t atten, adc_bitwidth_t bitwidth);
 esp_err_t adc_port_read(gpio_num_t pin, adc_port_sample_t *sample);
+
+/* Holds ADC reads off while something else borrows the SAR ADC, as the
+ * random number generator's entropy source does. Unlock after each lock. */
+esp_err_t adc_port_lock(void);
+void adc_port_unlock(void);

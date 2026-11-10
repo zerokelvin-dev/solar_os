@@ -295,6 +295,12 @@ static solar_os_saved_config_t credentials_file;
 static bool credentials_file_valid(const void *data, size_t length)
 { return credentials_blob_valid(data, length); }
 
+const char *solar_os_credentials_location(void)
+{
+    return credentials_file.path[0] != '\0' ? credentials_file.path :
+        "the credentials store (storage not found)";
+}
+
 static esp_err_t credentials_load(void)
 {
     size_t length = sizeof(*credentials_store.scratch);
