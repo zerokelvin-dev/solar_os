@@ -88,7 +88,7 @@ expansion = "J2: 3.3 V, GND, GPIO47, GPIO6/ADC, SCL20, and SDA19. GPIO6/47 suppo
 notes = "Native USB CDC and host mode are unavailable because GPIO19/20 carry onboard I2C. Format the internal storage volume after first installation if it contains no readable FAT filesystem."
 
 [devices.seeed_reterminal_e1001]
-display = "7.5-inch 800×480 UC8179/GDEY075T7 monochrome e-paper; display scale 2 (400×240 logical canvas)."
+display = "7.5-inch 800×480 UC8179/GDEY075T7 monochrome e-paper; display scale 2 (400×240 logical canvas); steady block cursor by default."
 keyboard = "Confirm/up/down buttons; hold UP for BLE pairing or DOWN for Escape; no touch or built-in keyboard."
 sound = "PWM buzzer output and PDM microphone capture."
 storage = "microSD over SPI shared with the display; internal FAT storage on 32 MB flash."

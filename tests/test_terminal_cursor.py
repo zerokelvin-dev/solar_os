@@ -45,8 +45,10 @@ class TerminalCursorTest(unittest.TestCase):
 
     def test_saved_preferences_and_invalid_values(self):
         subprocess.run(["make", "-C", str(ROOT / "tests/host"),
-                        "terminal_preferences_test", "terminal_preferences_sticky_test"], check=True)
-        for name in ("terminal_preferences_test", "terminal_preferences_sticky_test"):
+                        "terminal_preferences_test", "terminal_preferences_sticky_test",
+                        "terminal_preferences_steady_test"], check=True)
+        for name in ("terminal_preferences_test", "terminal_preferences_sticky_test",
+                     "terminal_preferences_steady_test"):
             binary = str(ROOT / "tests/host" / name)
             subprocess.run([binary], check=True)
             for value in (0, 1, 2, 3, 99):

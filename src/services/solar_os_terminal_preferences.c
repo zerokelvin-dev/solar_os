@@ -14,7 +14,8 @@
 #define TERM_NVS_CURSOR_KEY "cursor"
 
 /* One atomic value keeps shape/mode consistent across display and port shells.
- * Bits: 1 = underscore, 0 = steady. Zero is the factory block/blink setting. */
+ * Bits: 1 = underscore, 0 = steady. The factory setting is a block cursor,
+ * blinking unless the board defaults it to steady. */
 static atomic_uint cursor_preference = ATOMIC_VAR_INIT(4);
 #define TERM_DEFAULT_FONT SOLAR_OS_TERMINAL_FONT_COMPACT
 /* A board may pick a different factory default text size for its panel via
@@ -25,6 +26,14 @@ static atomic_uint cursor_preference = ATOMIC_VAR_INIT(4);
 #else
 #define TERM_DEFAULT_TEXT_SIZE SOLAR_OS_TERMINAL_TEXT_SIZE_16
 #endif
+
+/* A board may make the factory cursor steady with
+ * SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK 0: on e-paper a blinking cursor
+ * refreshes the panel twice a second. A saved `setterm cursor` still wins. */
+#ifndef SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK
+#define SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK 1
+#endif
+#define TERM_DEFAULT_CURSOR (SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK ? 0U : 1U)
 
 #ifndef SOLAR_OS_BOARD_DISPLAY_DEFAULT_ORIENTATION
 #define SOLAR_OS_BOARD_DISPLAY_DEFAULT_ORIENTATION 0
@@ -114,11 +123,11 @@ void solar_os_terminal_get_cursor_preference(solar_os_terminal_cursor_shape_t *s
 {
     unsigned value = atomic_load(&cursor_preference);
     if (value > 3U) {
-        uint16_t saved = 0;
+        uint16_t saved = TERM_DEFAULT_CURSOR;
         nvs_handle_t nvs;
         if (nvs_open(TERM_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
             if (nvs_get_u16(nvs, TERM_NVS_CURSOR_KEY, &saved) != ESP_OK || saved > 3U)
-                saved = 0;
+                saved = TERM_DEFAULT_CURSOR;
             nvs_close(nvs);
         }
         unsigned expected = 4;

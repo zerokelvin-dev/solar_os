@@ -4,7 +4,8 @@
 
 - Added Seeed Studio reTerminal E1001 support with its 7.5-inch monochrome
   e-paper display, microSD, microphone, buzzer, battery and charger
-  monitoring, RTC, and temperature/humidity sensor.
+  monitoring, RTC, and temperature/humidity sensor. The terminal cursor
+  defaults to a steady block on this board to avoid e-paper refreshes.
 
 ## 4.x
 
