@@ -98,6 +98,7 @@ TARGETS += gc9a01_expansion_test
 TARGETS += epd_ssd1677_test epd_uc8179_test uc8179_expansion_test epd_uc8279_test uc8279_expansion_test
 TARGETS += ssd1677_expansion_test
 TARGETS += epd_ssd2677_test ssd2677_expansion_test terminal_preferences_sticky_test
+TARGETS += terminal_preferences_steady_test
 TARGETS += epd_sticky_identify_test sticky_display_test
 TARGETS += epd_it8951_test
 TARGETS += sy6974_test
@@ -1333,7 +1334,8 @@ app_exit_result_test: app_exit_result_test.c $(ROOT)/src/solar_os.c $(ROOT)/src/
 		-Wl,--gc-sections -o $@
 
 terminal_preferences_sticky_test: override CFLAGS += -DSOLAR_OS_BOARD_DISPLAY_DEFAULT_SCALE=2
-terminal_preferences_test terminal_preferences_sticky_test: terminal_preferences_test.c $(ROOT)/src/services/solar_os_terminal_preferences.c $(ROOT)/src/services/solar_os_terminal_preferences.h
+terminal_preferences_steady_test: override CFLAGS += -DSOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK=0
+terminal_preferences_test terminal_preferences_sticky_test terminal_preferences_steady_test: terminal_preferences_test.c $(ROOT)/src/services/solar_os_terminal_preferences.c $(ROOT)/src/services/solar_os_terminal_preferences.h
 	$(CC) $(CFLAGS) -I. -I$(ROOT)/src -I$(ROOT)/src/services \
 		terminal_preferences_test.c $(ROOT)/src/services/solar_os_terminal_preferences.c -o $@
 
@@ -1592,6 +1594,7 @@ test: $(TARGETS)
 	./epd_ssd1677_test
 	./epd_ssd2677_test
 	./terminal_preferences_sticky_test
+	./terminal_preferences_steady_test
 	./ssd2677_expansion_test
 	./epd_sticky_identify_test
 	./sticky_display_test

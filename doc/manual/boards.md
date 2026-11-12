@@ -1423,7 +1423,8 @@ The `io` Layout view shows all eight J2 positions in pin order, including 3V3 an
 
 The display uses the panel's OTP waveforms. A full refresh uses the fast
 waveform; `refresh=auto` uses partial refreshes with a periodic full cleanup,
-as on other UC8179 panels.
+as on other UC8179 panels. The terminal cursor defaults to a steady block so the
+panel does not refresh for blinking; `setterm cursor block blink` restores it.
 
 The `charger0` provider configures a 1000 mA input limit, 4100 mV input voltage
 threshold, 480 mA charge current, and 4208 mV charge voltage.

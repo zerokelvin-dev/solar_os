@@ -40,6 +40,9 @@ class E1001BoardTest(unittest.TestCase):
         self.assertEqual((defines["SOLAR_OS_BOARD_DISPLAY_WIDTH"],
                           defines["SOLAR_OS_BOARD_DISPLAY_HEIGHT"]), ("800", "480"))
 
+    def test_cursor_defaults_to_steady_on_e_paper(self):
+        self.assertEqual(self.board["defines"]["SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK"], "0")
+
     def test_buttons_match_the_e1003(self):
         defines = self.board["defines"]
         self.assertEqual(defines["SOLAR_OS_BOARD_PIN_KEY"], "GPIO_NUM_3")

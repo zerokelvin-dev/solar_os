@@ -10,6 +10,10 @@
 #ifndef SOLAR_OS_BOARD_DISPLAY_DEFAULT_SCALE
 #define SOLAR_OS_BOARD_DISPLAY_DEFAULT_SCALE 1
 #endif
+#ifndef SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK
+#define SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK 1
+#endif
+#define DEFAULT_BLINK ((bool)SOLAR_OS_BOARD_TERMINAL_DEFAULT_CURSOR_BLINK)
 
 typedef struct {
     const char *key;
@@ -120,7 +124,7 @@ int main(int argc, char **argv)
         solar_os_terminal_get_cursor_preference(&shape, &blink);
         assert(shape == (saved <= 3 ? (solar_os_terminal_cursor_shape_t)(saved >> 1) :
                                        SOLAR_OS_TERMINAL_CURSOR_BLOCK));
-        assert(blink == (saved > 3 || !(saved & 1U)));
+        assert(blink == (saved > 3 ? DEFAULT_BLINK : !(saved & 1U)));
         return 0;
     }
     solar_os_terminal_profile_t profile;
@@ -136,7 +140,7 @@ int main(int argc, char **argv)
     solar_os_terminal_cursor_shape_t shape;
     bool blink;
     solar_os_terminal_get_cursor_preference(&shape, &blink);
-    assert(shape == SOLAR_OS_TERMINAL_CURSOR_BLOCK && blink);
+    assert(shape == SOLAR_OS_TERMINAL_CURSOR_BLOCK && blink == DEFAULT_BLINK);
     assert(solar_os_terminal_parse_cursor_shape("block", &shape));
     assert(shape == SOLAR_OS_TERMINAL_CURSOR_BLOCK);
     assert(solar_os_terminal_parse_cursor_shape("underscore", &shape));
